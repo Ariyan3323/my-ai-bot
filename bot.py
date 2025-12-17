@@ -1,4 +1,8 @@
 import os
+from services.tutor import handle_tutor_request
+from services.writer import handle_writing_request
+from services.legal import handle_legal_request
+from services.trader import handle_trader_request
 import telebot
 from telebot import types
 
@@ -43,13 +47,21 @@ def send_help(message):
 def handle_buttons(message):
     text = message.text
     if text == "📚 معلم خصوصی":
-        bot.reply_to(message, "در حال توسعه... (این ماژول به زودی فعال می‌شود)")
+        # 📚 ماژول معلم خصوصی
+        response = handle_tutor_request("ریاضی") # شروع با یک درس پیش‌فرض
+        bot.send_message(message.chat.id, response, parse_mode="Markdown")
     elif text == "✍️ مقاله / پروژه":
-        bot.reply_to(message, "در حال توسعه... (این ماژول به زودی فعال می‌شود)")
+        # ✍️ ماژول نویسنده
+        response = handle_writing_request("هوش مصنوعی", "مقاله", "دانشگاهی") # شروع با یک موضوع پیش‌فرض
+        bot.send_message(message.chat.id, response, parse_mode="Markdown")
     elif text == "⚖️ حقوقی ایران":
-        bot.reply_to(message, "در حال توسعه... (این ماژول به زودی فعال می‌شود)")
+        # ⚖️ ماژول حقوقی
+        response = handle_legal_request("طلاق") # شروع با یک موضوع پیش‌فرض
+        bot.send_message(message.chat.id, response, parse_mode="Markdown")
     elif text == "📈 آموزش ترید":
-        bot.reply_to(message, "در حال توسعه... (این ماژول به زودی فعال می‌شود)")
+        # 📈 ماژول ترید
+        response = handle_trader_request("تحلیل تکنیکال") # شروع با یک موضوع پیش‌فرض
+        bot.send_message(message.chat.id, response, parse_mode="Markdown")
     elif text == "💰 اشتراک ماهانه":
         # 🔮 اینجا ماژول Stars فعال می‌شه (بعداً)
         bot.reply_to(message, "اشتراک ماهانه شامل دسترسی به همه خدمات پیشرفته است.\nدر حال حاضر در دسترس نیست — به زودی فعال می‌شود.")
