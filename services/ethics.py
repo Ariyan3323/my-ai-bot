@@ -3,37 +3,21 @@ import re
 def is_ethical_request(text: str) -> bool:
     """
     بررسی می‌کند که آیا متن درخواستی از کاربر حاوی محتوای غیرقانونی، آسیب‌زننده یا غیراخلاقی است.
-    بازگشت True = درخواست اخلاقی و قابل پردازش.
-    بازگشت False = درخواست باید رد شود.
     """
     if not text or not isinstance(text, str):
         return False
 
     text = text.lower().strip()
 
-    # 🔒 الگوهای غیرقانونی / خطرناک (حساس به زبان فارسی و انگلیسی)
     unethical_patterns = [
-        # کلاهبرداری، فیشینگ، دزدی
         r"\b(hack|phishing|scam|fake|trick|دزد|سرقت|کلاه|فیش|کلاهبردار|دروغ|فریب|فروش ساقط)\b",
-        
-        # آسیب‌رسانی، تهدید، خشونت
         r"\b(doxx?|swat|attack|threat|harass|آزار|تهدید|آسیب|خشونت|جنگ|کشتن|ترور)\b",
-        
-        # دور زدن سیستم، هک، غیرقانونی
         r"\b(bypass|crack|exploit|illegal|غیرقانونی|فیلترشکن|دور زدن|خرابکاری|هک|ورود غیرمجاز|بدافزار)\b",
-        
-        # مواد مخدر، سلاح، قمار
         r"\b(drug|weapon|bomb|قمار|مخدر|سلاح|انفجار|تروریست|شبح|کریپتو اسکم)\b",
-        
-        # حملات فنی (جلوگیری از SQLi, XSS, etc.)
         r"(union\s+select|select\s+\*|drop\s+table|--|<script|javascript:|onload\s*=|\.exe|\.bat)",
     ]
 
-    for pattern in unethical_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return False
-
-    return True
+    return not any(re.search(pattern, text, re.IGNORECASE) for pattern in unethical_patterns)
 
 
 def get_ethics_rejection_message(lang: str = "fa") -> str:
@@ -44,7 +28,7 @@ def get_ethics_rejection_message(lang: str = "fa") -> str:
         "fa": (
             "⚠️ **درخواست شما پردازش نمی‌شود.**\n"
             "من یک ربات هوشمند هستم که **صرفاً در خدمت آگاهی، یادگیری و عدالت** است.\n"
-            "هیچ‌گاه در فعالیت‌های غیرقانونی، کلاهبرداری، آسیب‌رسانی یا دور زدن امنیت کمک نمی‌کنم.\n"
+            "هیچ‌گاه در فعالیت‌های غیرقانونی، کلاهبرداری، آسیب‌رسانی به دیگران یا دور زدن امنیت کمک نمی‌کنم.\n"
             "اگر سؤالی دربارهٔ آموزش، تحلیل بازار، حقوق یا نویسندگی داری، خوشحال می‌شم کمک کنم."
         ),
         "en": (
