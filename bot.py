@@ -1,4 +1,5 @@
 import os
+import re
 import telebot
 from telebot import types
 
@@ -49,11 +50,18 @@ def handle_buttons(message):
     user_id = message.from_user.id
     text = message.text.strip()
 
-    # 🔒 بررسی اخلاقی بودن درخواست
+    # 🔒 ——— فیلتر اخلاقی (اولین چک در هر درخواست) ———
     if not is_ethical_request(text):
-        rejection_message = get_ethics_rejection_message()
-        bot.reply_to(message, rejection_message, parse_mode="Markdown")
-        return
+        # تشخیص زبان ساده برای پاسخ مناسب
+        lang = "fa"
+        if re.search(r"[a-zA-Z]", text):
+            lang = "en"
+        if any(char in text for char in "مرحبا سلام شكر شكرا"):
+            lang = "ar"
+        
+        bot.reply_to(message, get_ethics_rejection_message(lang), parse_mode="Markdown")
+        return  # ✋ متوقف کردن ادامه پردازش
+    # ——— پایان فیلتر اخلاقی ———
 
     if text == "📚 معلم خصوصی":
         bot.reply_to(message, "لطفاً موضوع درس را بنویسید (مثلاً: ریاضی، فیزیک، زبان):")
