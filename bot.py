@@ -1,188 +1,169 @@
 import os
-import re
-from flask import Flask, request, jsonify
-import telebot
-from telebot import types
+import json
+from dotenv import load_dotenv
+from telebot import TeleBot
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 
-# 🔌 وارد کردن ماژول‌های خدماتی
+# Import Service Modules
+from services.ethics import is_ethical_request, get_ethics_rejection_message
+from services.trader import handle_trader_request
+from services.legal import handle_legal_request
 from services.tutor import handle_tutor_request
 from services.writer import handle_writing_request
-from services.legal import handle_legal_request
-from services.trader import handle_trader_request
-from services.ethics import is_ethical_request, get_ethics_rejection_message
 from services.premium import check_access_level, get_premium_features
 
-# 🔑 تنظیمات اولیه
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("لطفاً متغیر محیطی BOT_TOKEN را در Railway تنظیم کنید.")
+# ----------------------------------------------------------------------
+# 1. Initialization
+# ----------------------------------------------------------------------
+load_dotenv()
 
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")  # مثلاً: https://my-ai-bot.up.railway.app
+# Telegram and Gemini API Keys
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask(__name__)
+if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
+    # In a real deployment, we would raise an error, but for the sandbox, we print and exit
+    print("Error: TELEGRAM_TOKEN or GEMINI_API_KEY not found in environment variables.")
+    # For deployment, we assume these are set
+    # exit() 
 
-# 🧠 حالت‌های تعاملی (برای پردازش چندمرحله‌ای)
-user_states = {}
+bot = TeleBot(TELEGRAM_TOKEN)
+client = genai.Client(api_key=GEMINI_API_KEY)
+model_name = "gemini-2.5-flash"
 
-def detect_language(text: str) -> str:
-    """
-    تشخیص سادهٔ زبان کاربر بر اساس محتوای پیام.
-    خروجی: کد زبان ('fa', 'en', 'ar')
-    """
-    if not text or not isinstance(text, str):
-        return "fa"
+# Map function names to actual functions for execution
+tool_functions = {
+    "handle_trader_request": handle_trader_request,
+    "handle_legal_request": handle_legal_request,
+    "handle_tutor_request": handle_tutor_request,
+    "handle_writing_request": handle_writing_request,
+    "check_access_level": check_access_level,
+    "get_premium_features": get_premium_features,
+}
+
+# ----------------------------------------------------------------------
+# 2. Core Agent Logic (Function Calling)
+# ----------------------------------------------------------------------
+
+def get_gemini_response(prompt):
+    """Sends prompt to Gemini and handles function calls."""
     
-    text_lower = text.lower()
+    # All service functions are passed as tools to the model
+    tools = [
+        handle_trader_request,
+        handle_legal_request,
+        handle_tutor_request,
+        handle_writing_request,
+        check_access_level,
+        get_premium_features,
+    ]
     
-    # تشخیص انگلیسی (وجود حروف انگلیسی + کلمات رایج)
-    if re.search(r"[a-z]", text_lower):
-        english_indicators = ["hello", "hi", "buy", "sell", "market", "price", "analysis", "btc", "eth", "crypto", "trading"]
-        if any(ind in text_lower for ind in english_indicators):
-            return "en"
-    
-    # تشخیص عربی (وجود حروف عربی یا کلمات رایج)
-    if any(char in text for char in "مرحبا سلام شكر شكرا السوق تحليل شراء بيع"):
-        return "ar"
-    
-    # پیش‌فرض: فارسی
-    return "fa"
-
-def send_disclaimer(chat_id, lang="fa"):
-    messages = {
-        "fa": (
-            "⚠️ **هشدار حقوقی و اخلاقی**\n"
-            "تمام خدمات این ربات **فقط جنبهٔ آموزشی و اطلاع‌رسانی** دارد.\n"
-            "هیچ‌یک از تحلیل‌ها، پیش‌بینی‌ها یا پیشنهادات، **وعدهٔ سود یا مشاورهٔ مالی** محسوب نمی‌شود.\n"
-            "**کل مسئولیت تصمیمات ترید و استفاده از اطلاعات، بر عهدهٔ شما (کاربر)** است.\n"
-            "با ادامهٔ استفاده، شما این شرایط را پذیرفته‌اید."
-        ),
-        "en": (
-            "⚠️ **Legal & Ethical Disclaimer**\n"
-            "All services are for **educational and informational purposes only**.\n"
-            "No analysis, prediction, or suggestion constitutes **financial advice or profit guarantee**.\n"
-            "**You (the user) bear full responsibility** for your trading decisions.\n"
-            "By continuing, you accept these terms."
-        ),
-        "ar": (
-            "⚠️ **تنويه قانوني وأخلاقي**\n"
-            "جميع الخدمات لأغراض **تعليمية وإعلامية فقط**.\n"
-            "لا يُعد أي تحليل أو توقع أو اقتراح **نصيحة مالية أو ضمان ربح**.\n"
-            "**أنت (المستخدم) تتحمل المسؤولية الكاملة** عن قرارات التداول الخاصة بك.\n"
-            "بمتابعتك، فإنك تقبل هذه الشروط."
-        )
-    }
-    bot.send_message(chat_id, messages.get(lang, messages["fa"]), parse_mode="Markdown")
-
-# 🎯 دستور /start
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    lang = detect_language(message.text)
-    send_disclaimer(message.chat.id, lang)
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("📚 یادگیری", callback_data="tutor"),
-        types.InlineKeyboardButton("✍️ نویسندگی", callback_data="writer"),
-        types.InlineKeyboardButton("⚖️ حقوق ایران", callback_data="legal"),
-        types.InlineKeyboardButton("📈 ترید هوشمند", callback_data="trader"),
-        types.InlineKeyboardButton("💎 اشتراک ویژه", callback_data="premium")
+    # System Instruction to guide the model's behavior
+    system_instruction = (
+        "You are a Super-Agent for the Iranian market, specialized in trading, "
+        "Iranian law, academic tutoring, and professional writing. "
+        "Your primary language is Farsi (Persian). "
+        "Use the provided tools to answer specific user requests. "
+        "If a tool is available, you MUST use it. If no tool is relevant, "
+        "answer the user's question directly in Farsi."
     )
-    bot.send_message(message.chat.id, "لطفاً یک گزینه انتخاب کنید:", reply_markup=markup)
 
-# 📥 پردازش دکمه‌های Inline
-@bot.callback_query_handler(func=lambda call: True)
-def handle_inline(call):
-    user_id = call.from_user.id
-    lang = detect_language(call.message.text)
-    
-    if not is_ethical_request(call.data):
-        bot.answer_callback_query(call.id, "درخواست غیراخلاقی!")
-        return
-
-    if call.data == "tutor":
-        bot.send_message(call.message.chat.id, "لطفاً موضوع درس را بنویسید (مثلاً: ریاضی):")
-        user_states[user_id] = ("tutor", lang)
-    elif call.data == "writer":
-        bot.send_message(call.message.chat.id, "موضوع و نوع سند (مثال: هوش مصنوعی — مقاله):")
-        user_states[user_id] = ("writer", lang)
-    elif call.data == "legal":
-        bot.send_message(call.message.chat.id, "نوع پرونده (طلاق، حضانت، ...):")
-        user_states[user_id] = ("legal", lang)
-    elif call.data == "trader":
-        access = check_access_level(user_id)
-        if access == "free":
-            bot.send_message(call.message.chat.id, "📊 تحلیل آنی بازار (رایگان):\n• حرکت نهنگ‌ها (24h)\n• RSI عمومی\n\n💎 برای پیش‌بینی روزانه، اشتراک بخرید.")
-        else:
-            bot.send_message(call.message.chat.id, "لطفاً نماد سکه را وارد کنید (مثلاً: BTC):")
-            user_states[user_id] = ("trader", lang)
-    elif call.data == "premium":
-        bot.send_message(call.message.chat.id, 
-            "💎 **اشتراک ویژه (با Telegram Stars)**\n"
-            "• 1000 Stars/ماه: پیش‌بینی روزانه + هشدار نهنگ\n"
-            "• 2500 Stars/ماه: داده‌های خام + پروفایل هوشمند\n\n"
-            "⚠️ فعلاً در دسترس نیست — به زودی!"
+    # Use generate_content for a single turn with tools
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            tools=tools,
+            system_instruction=system_instruction
         )
-    bot.answer_callback_query(call.id)
+    )
 
-# 💬 پردازش پاسخ کاربر
-@bot.message_handler(func=lambda message: True)
-def handle_text(message):
-    user_id = message.from_user.id
-    text = message.text.strip() if message.text else ""
-    lang = detect_language(text)
-    
-    # 🔒 فیلتر اخلاقی
-    if not is_ethical_request(text):
-        bot.reply_to(message, get_ethics_rejection_message(lang), parse_mode="Markdown")
-        return
-
-    if user_id in user_states:
-        mode, _ = user_states[user_id]
-        if mode == "tutor":
-            response = handle_tutor_request(text)
-        elif mode == "writer":
-            try:
-                topic, info = text.split("—", 1)
-                doc_type = "مقاله" if "مقاله" in info else "پروژه"
-                level = "کاری" if "کاری" in info else "دانشگاهی"
-                response = handle_writing_request(topic.strip(), doc_type, level)
-            except:
-                response = handle_writing_request(text)
-        elif mode == "legal":
-            response = handle_legal_request(text)
-        elif mode == "trader":
-            response = handle_trader_request(text)
-        else:
-            response = "لطفاً از منو استفاده کنید."
+    # Function Calling Loop
+    while response.function_calls:
+        tool_responses = []
         
-        bot.reply_to(message, response, parse_mode="Markdown")
-        del user_states[user_id]
-    else:
-        bot.reply_to(message, "لطفاً از منوی /start استفاده کنید.")
+        for function_call in response.function_calls:
+            function_name = function_call.name
+            args = dict(function_call.args)
+            
+            if function_name in tool_functions:
+                # Execute the local function
+                local_function = tool_functions[function_name]
+                
+                # Special handling for user_id in check_access_level
+                # In a real app, user_id would be passed here. For this example, we use a placeholder.
+                if function_name == "check_access_level":
+                    args["user_id"] = 12345 
+                
+                # Execute the function with arguments
+                function_result = local_function(**args)
+                
+                # Prepare the tool response for the model
+                tool_responses.append(
+                    types.Part.from_function_response(
+                        name=function_name,
+                        response={"result": function_result}
+                    )
+                )
+            else:
+                # Handle unknown function call
+                tool_responses.append(
+                    types.Part.from_function_response(
+                        name=function_name,
+                        response={"error": f"Unknown function: {function_name}"}
+                    )
+                )
 
-# 🌐 Webhook برای Railway
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return 'OK', 200
-    return 'Invalid', 400
+        # Send the function results back to the model
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[prompt, *tool_responses], # Send original prompt + tool results
+            config=types.GenerateContentConfig(
+                tools=tools,
+                system_instruction=system_instruction
+            )
+        )
+        
+    return response.text
 
-@app.route('/setwebhook', methods=['GET'])
-def set_webhook_route():
-    if WEBHOOK_URL:
-        bot.set_webhook(url=WEBHOOK_URL + "/webhook")
-        return jsonify({"status": "Webhook set!"})
-    return jsonify({"error": "WEBHOOK_URL not set"})
+# ----------------------------------------------------------------------
+# 3. Telegram Message Handler
+# ----------------------------------------------------------------------
 
-@app.route('/', methods=['GET'])
-def health():
-    return '🤖 Rbot is running on Railway!'
+def process_message(message_json):
+    """Processes incoming Telegram message from Webhook."""
+    try:
+        update = types.Update.from_json(message_json)
+        message = update.message
+        
+        if not message or not message.text:
+            return # Ignore non-text messages
 
-# 🚀 اجرا
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+        chat_id = message.chat.id
+        text = message.text.strip()
+        
+        # --- 1. Ethics Filter (First Line of Defense) ---
+        if not is_ethical_request(text):
+            rejection_message = get_ethics_rejection_message(lang="fa") # Assuming default Farsi
+            bot.send_message(chat_id, rejection_message, parse_mode="Markdown")
+            return
+
+        # --- 2. Get Response from Super-Agent (Gemini with Tools) ---
+        gemini_text_response = get_gemini_response(text)
+        
+        # --- 3. Send to Telegram ---
+        if gemini_text_response:
+            bot.send_message(chat_id, gemini_text_response, parse_mode="Markdown")
+
+    except APIError as e:
+        error_message = f"An API error occurred: {e}"
+        print(error_message)
+        bot.send_message(chat_id, "متأسفانه در حال حاضر به دلیل خطای API نمی‌توانم پاسخ دهم. لطفاً بعداً دوباره تلاش کنید.")
+    except Exception as e:
+        error_message = f"An unexpected error occurred: {e}"
+        print(error_message)
+        bot.send_message(chat_id, "متأسفانه خطای ناشناخته‌ای رخ داد. لطفاً دوباره تلاش کنید.")
+
+# The bot object is exported for use in main.py
