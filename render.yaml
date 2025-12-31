@@ -1,0 +1,17 @@
+# Render Blueprint for Super-Agent Telegram Bot
+
+services:
+  - type: web
+    name: super-agent-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false

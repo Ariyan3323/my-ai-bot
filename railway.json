@@ -1,0 +1,20 @@
+{
+  "$schema": "https://railway.app/schemas/railway.schema.json",
+  "name": "Super-Agent Telegram Bot",
+  "plugins": [
+    {
+      "name": "python",
+      "version": "3.11"
+    }
+  ],
+  "variables": [
+    "TELEGRAM_TOKEN",
+    "GEMINI_API_KEY",
+    "WEBHOOK_URL"
+  ],
+  "deploy": {
+    "startCommand": "gunicorn main:app",
+    "healthcheckPath": "/",
+    "restartPolicy": "always"
+  }
+}
