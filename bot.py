@@ -13,6 +13,7 @@ from services.legal import handle_legal_request
 from services.tutor import handle_tutor_request
 from services.writer import handle_writing_request
 from services.premium import check_access_level, get_premium_features
+from services.image_generator import handle_image_request
 
 # ----------------------------------------------------------------------
 # 1. Initialization
@@ -39,6 +40,7 @@ tool_functions = {
     "handle_legal_request": handle_legal_request,
     "handle_tutor_request": handle_tutor_request,
     "handle_writing_request": handle_writing_request,
+    "handle_image_request": handle_image_request,
     "check_access_level": check_access_level,
     "get_premium_features": get_premium_features,
 }
@@ -56,6 +58,7 @@ def get_gemini_response(prompt):
         handle_legal_request,
         handle_tutor_request,
         handle_writing_request,
+        handle_image_request,
         check_access_level,
         get_premium_features,
     ]
