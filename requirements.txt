@@ -4,3 +4,10 @@ google-generativeai
 python-dotenv
 requests
 gunicorn
+moviepy
+pillow
+gTTS
+SpeechRecognition
+pydub
+google-cloud-text-to-speech
+psutil
