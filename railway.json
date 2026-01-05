@@ -13,7 +13,7 @@
     "WEBHOOK_URL"
   ],
   "deploy": {
-    "startCommand": "gunicorn main:app",
+    "startCommand": "gunicorn app:app",
     "healthcheckPath": "/",
     "restartPolicy": "always"
   }
