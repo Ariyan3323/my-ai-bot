@@ -92,6 +92,11 @@ if not keys_list:
 
 current_key_index = 0
 
+try:
+    client = genai.Client(api_key=keys_list[0]) if keys_list else None
+except Exception:
+    client = None
+
 def get_current_gemini_client():
     global current_key_index, keys_list
     if not keys_list:
@@ -128,12 +133,16 @@ def call_gemini_with_fallback(func, *args, **kwargs):
 FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-1.5-flash"]
 model_name = FALLBACK_MODELS[0]
 
-def generate_with_model_fallback(client, contents, config=None):
+def generate_with_model_fallback(c=None, contents=None, config=None):
     """Tries available models if Google servers return 503 or 429 high demand."""
+    global client
+    active_client = c or client
+    if not active_client:
+        active_client = get_current_gemini_client()
     last_err = None
     for m in FALLBACK_MODELS:
         try:
-            return client.models.generate_content(
+            return active_client.models.generate_content(
                 model=m,
                 contents=contents,
                 config=config
