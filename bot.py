@@ -83,7 +83,28 @@ def call_gemini_with_fallback(func, *args, **kwargs):
                 break
     raise last_error
 
-model_name = "gemini-flash-latest"
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-1.5-flash"]
+model_name = FALLBACK_MODELS[0]
+
+def generate_with_model_fallback(client, contents, config=None):
+    """Tries available models if Google servers return 503 or 429 high demand."""
+    last_err = None
+    for m in FALLBACK_MODELS:
+        try:
+            return client.models.generate_content(
+                model=m,
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            last_err = e
+            err_msg = str(e).lower()
+            if "503" in err_msg or "unavailable" in err_msg or "high demand" in err_msg or "429" in err_msg:
+                print(f"Model {m} is busy/unavailable, trying next model...")
+                continue
+            raise e
+    raise last_err
+
 
 # Map function names to actual functions for execution
 tool_functions = {
@@ -162,8 +183,8 @@ def get_gemini_response(message):
     )
 
     # Use generate_content for a single turn with tools
-    response = client.models.generate_content(
-        model=model_name,
+    response = generate_with_model_fallback(client,
+
         contents=full_prompt,
         config=gemini_types.GenerateContentConfig(
             tools=None,
@@ -207,8 +228,8 @@ def get_gemini_response(message):
                 )
 
         # Send the function results back to the model
-        response = client.models.generate_content(
-            model=model_name,
+        response = generate_with_model_fallback(client,
+
             contents=[full_prompt, *tool_responses], # Send original prompt + tool results
             config=gemini_types.GenerateContentConfig(
                 tools=None,
@@ -531,8 +552,8 @@ def handle_incoming_photo(message):
             f"پاسخ را دقیق، ساختاریافته، جذاب و به زبان فارسی بنویس."
         )
 
-        response = client.models.generate_content(
-            model=model_name,
+        response = generate_with_model_fallback(client,
+
             contents=[image_part, analysis_prompt]
         )
 
@@ -576,8 +597,8 @@ def handle_incoming_voice(message):
             "🤖 **پاسخ:** ..."
         )
 
-        response = client.models.generate_content(
-            model=model_name,
+        response = generate_with_model_fallback(client,
+
             contents=[audio_part, voice_prompt]
         )
 
