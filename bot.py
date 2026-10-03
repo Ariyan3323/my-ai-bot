@@ -33,7 +33,7 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 
 bot = TeleBot(TELEGRAM_TOKEN)
 client = genai.Client(api_key=GEMINI_API_KEY)
-model_name = "gemini-2.5-flash"
+model_name = "gemini-2.0-flash"
 
 # Map function names to actual functions for execution
 tool_functions = {
