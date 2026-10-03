@@ -548,13 +548,10 @@ def handle_generate_image_command(message):
     chat_id = message.chat.id
     prompt = message.text.partition(' ')[2].strip()
     if not prompt:
-        bot.reply_to(message, "🎨 لطفاً موضوع یا توصیف عکسی که می‌خوای رو بعد از دستور بنویس.
-مثال:
-", parse_mode="Markdown")
+        bot.reply_to(message, "🎨 لطفاً موضوع یا توصیف عکسی که می‌خوای رو بعد از دستور بنویس. مثال: /draw یک فضانورد در فضا", parse_mode="Markdown")
         return
 
-    status_msg = bot.reply_to(message, f"🎨 در حال طراحی و خلق تصویر برای:
-_{prompt}_...", parse_mode="Markdown")
+    status_msg = bot.reply_to(message, f"🎨 در حال طراحی و خلق تصویر برای: _{prompt}_...", parse_mode="Markdown")
     try:
         # Prompt translation/enhancement or direct URL via Pollinations AI
         encoded_prompt = urllib.parse.quote(prompt)
@@ -586,12 +583,9 @@ def handle_incoming_photo(message):
         image_part = gemini_types.Part.from_bytes(data=downloaded_file, mime_type="image/jpeg")
 
         analysis_prompt = (
-            f"تصویر پیوست شده را ببین.
-"
-            f"درخواست یا سؤال کاربر: {user_caption}
-
-"
-            f"پاسخ را دقیق، ساختاریافته، جذاب و به زبان فارسی بنویس."
+            "تصویر پیوست شده را ببین.\n"
+            f"درخواست یا سؤال کاربر: {user_caption}\n\n"
+            "پاسخ را دقیق، ساختاریافته، جذاب و به زبان فارسی بنویس."
         )
 
         response = generate_with_model_fallback(client,
@@ -627,15 +621,10 @@ def handle_incoming_voice(message):
         audio_part = gemini_types.Part.from_bytes(data=downloaded_audio, mime_type="audio/ogg")
 
         voice_prompt = (
-            "این فایل صوتی را با دقت گوش کن.
-"
-            "ابتدا متن صحبت گوینده را به صورت دقیق بنویس، سپس پاسخ کامل، هوشمندانه و محترمانه به زبان فارسی ارائه بده.
-"
-            "قالب پاسخ:
-"
-            "🗣️ **آنچه شنیدم:** ...
-
-"
+            "این فایل صوتی را با دقت گوش کن.\n"
+            "ابتدا متن صحبت گوینده را به صورت دقیق بنویس، سپس پاسخ کامل، هوشمندانه و محترمانه به زبان فارسی ارائه بده.\n"
+            "قالب پاسخ:\n"
+            "🗣️ **آنچه شنیدم:** ...\n\n"
             "🤖 **پاسخ:** ..."
         )
 
@@ -772,22 +761,13 @@ def handle_bot_membership_change(update):
     new_status = update.new_chat_member.status
     if new_status in ['member', 'administrator']:
         intro_text = (
-            f"🌟 **سلام به اعضای محترم {chat.title or 'گروه'}!**
-
-"
-            "من دستیار هوشمند، تحلیلگر بازار و ایجنت پیشرفته محمد هستم.
-"
-            "📌 **قابلیت‌ها:**
-"
-            "🔹 تحلیل عکس‌ها و تصاویر با دید بصری هوش مصنوعی
-"
-            "🔹 شنیدن و پاسخ به پیام‌های صوتی (ویس)
-"
-            "🔹 طراحی و ساخت تصویر با دستور 
-"
-            "🔹 پاسخ به سؤالات علمی، نگارش، حقوقی و ترید
-
-"
+            f"🌟 **سلام به اعضای محترم {chat.title or 'گروه'}!**\n\n"
+            "من دستیار هوشمند، تحلیلگر بازار و ایجنت پیشرفته محمد هستم.\n"
+            "📌 **قابلیت‌ها:**\n"
+            "🔹 تحلیل عکس‌ها و تصاویر با دید بصری هوش مصنوعی\n"
+            "🔹 شنیدن و پاسخ به پیام‌های صوتی (ویس)\n"
+            "🔹 طراحی و ساخت تصویر با دستور /draw یا /image\n"
+            "🔹 پاسخ به سؤالات علمی، نگارش، حقوقی و ترید\n\n"
             "آماده خدمت‌رسانی و یادگیری در این فضا هستم! 🚀"
         )
         try:
