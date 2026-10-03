@@ -5,7 +5,7 @@ services:
     name: super-agent-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn main:app
+    startCommand: gunicorn app:app
     plan: free
     healthCheckPath: /
     envVars:
