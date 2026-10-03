@@ -116,7 +116,7 @@ def get_gemini_response(message):
         model=model_name,
         contents=full_prompt,
         config=gemini_types.GenerateContentConfig(
-            tools=tools,
+            tools=None,
             system_instruction=system_instruction
         )
     )
@@ -161,7 +161,7 @@ def get_gemini_response(message):
             model=model_name,
             contents=[full_prompt, *tool_responses], # Send original prompt + tool results
             config=gemini_types.GenerateContentConfig(
-                tools=tools,
+                tools=None,
                 system_instruction=system_instruction
             )
         )
