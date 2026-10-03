@@ -10,3 +10,4 @@ gTTS
 SpeechRecognition
 pydub
 psutil
+openai
