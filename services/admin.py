@@ -51,7 +51,7 @@ def get_user_level(user_id):
 
 def is_mohammad(message_or_call):
     """Checks if the user is the admin (Mohammad)."""
-    user_id = message_or_call.from_user.id if hasattr(message_or_call, 'from_user') else message_or_call.chat.id
+    user_id = message_or_call.from_user.id if hasattr(message_or_call, 'from_user') else (message_or_call.chat.id if hasattr(message_or_call, 'chat') else getattr(message_or_call, 'id', message_or_call))
     return user_id == ADMIN_ID
 
 def is_verified(user_id):
