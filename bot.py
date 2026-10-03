@@ -130,7 +130,7 @@ def call_gemini_with_fallback(func, *args, **kwargs):
                 break
     raise last_error
 
-FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
+FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
 model_name = FALLBACK_MODELS[0]
 
 def generate_with_model_fallback(c=None, contents=None, config=None):
@@ -566,6 +566,49 @@ def set_voice_handler(call):
 
 # --- Multimodal & Generation Handlers ---
 
+def clean_text_for_tts(t: str) -> str:
+    if not t:
+        return ""
+    import re
+    t = re.sub(r'http\S+', '', t)
+    for c in ['*', '_', '`', '#', '~', '>', '•', '-']:
+        t = t.replace(c, '')
+    if len(t) > 400:
+        t = t[:380] + '...'
+    return t.strip()
+
+def check_image_intent(msg_text: str):
+    if not msg_text:
+        return None
+    import re
+    t = msg_text.strip()
+    kws = ["بکش", "نقاشی کن", "طراحی کن", "تصویر بساز", "عکس بساز", "تصویر یک", "عکس یک", "نقاشی یک", "draw ", "paint "]
+    for k in kws:
+        if k in t.lower():
+            p = t
+            for w in ["لطفا", "لطفاً", "برام", "واسم", "میشه", "یه", "یک", "بکشی", "بکش", "نقاشی کن", "طراحی کن", "تصویر بساز", "عکس بساز"]:
+                p = re.sub(r'\b' + re.escape(w) + r'\b', '', p)
+            p = p.strip()
+            return p if p else t
+    return None
+
+def free_online_search(query: str) -> str:
+    """Fetches free online knowledge from DuckDuckGo when keys fail or for live info."""
+    try:
+        import urllib.request, urllib.parse, json
+        q = urllib.parse.quote(query)
+        url = f"https://api.duckduckgo.com/?q={q}&format=json&no_html=1&skip_disambig=1"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read().decode('utf-8'))
+            ans = data.get('AbstractText') or data.get('Answer')
+            if ans:
+                return ans
+    except Exception as e:
+        print(f"DuckDuckGo search error: {e}")
+    return None
+
+
 import urllib.parse
 
 @bot.message_handler(commands=['generate', 'draw', 'image'])
@@ -593,90 +636,109 @@ def handle_generate_image_command(message):
 
 @bot.message_handler(content_types=['photo'])
 def handle_incoming_photo(message):
-    """Analyzes photos sent by the user using Gemini Vision."""
     chat_id = message.chat.id
     if not is_verified(chat_id):
         bot.send_message(chat_id, "⛔ دسترسی محدود است. لطفاً با /start احراز هویت کنید.")
         return
 
-    status_msg = bot.reply_to(message, "👁️ در حال نگاه کردن به عکس و تحلیل دقیق آن با هوش مصنوعی...")
+    status_msg = bot.reply_to(message, "👁️ در حال نگاه کردن به عکس و تحلیل آن با هوش مصنوعی...")
     try:
-        # Download highest resolution photo
         photo_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(photo_info.file_path)
 
-        user_caption = message.caption.strip() if message.caption else "این تصویر را با جزئیات کامل و با دقت بالا به زبان فارسی تحلیل و بررسی کن."
-        image_part = gemini_types.Part.from_bytes(data=downloaded_file, mime_type="image/jpeg")
+        user_caption = message.caption.strip() if message.caption else "این تصویر را با جزئیات کامل به زبان فارسی تحلیل و بررسی کن."
+        reply_text = None
 
-        analysis_prompt = (
-            "تصویر پیوست شده را ببین.\n"
-            f"درخواست یا سؤال کاربر: {user_caption}\n\n"
-            "پاسخ را دقیق، ساختاریافته، جذاب و به زبان فارسی بنویس."
-        )
+        # 1. Try Gemini
+        try:
+            image_part = gemini_types.Part.from_bytes(data=downloaded_file, mime_type="image/jpeg")
+            resp = generate_with_model_fallback(client, contents=[image_part, user_caption])
+            if resp and hasattr(resp, 'text') and resp.text:
+                reply_text = resp.text
+        except Exception as ge:
+            print(f"Gemini photo error: {ge}")
 
-        response = generate_with_model_fallback(client,
+        # 2. OpenAI GPT-4o Vision Fallback
+        if not reply_text and openai_client:
+            try:
+                import base64
+                b64 = base64.b64encode(downloaded_file).decode('utf-8')
+                v_resp = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": user_caption},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                            ]
+                        }
+                    ],
+                    max_tokens=600
+                )
+                reply_text = v_resp.choices[0].message.content
+            except Exception as oe:
+                print(f"OpenAI photo error: {oe}")
 
-            contents=[image_part, analysis_prompt]
-        )
+        if not reply_text:
+            reply_text = "متأسفانه در تحلیل تصویر خطایی رخ داد. لطفاً کیفیت عکس را بررسی یا مجدداً ارسال کنید."
 
-        reply_text = response.text if response.text else "متأسفانه نتوانستم تصویر را به طور کامل تحلیل کنم."
         bot.reply_to(message, reply_text)
         try:
             bot.delete_message(chat_id, status_msg.message_id)
         except Exception:
             pass
     except Exception as e:
-        print(f"Photo analysis error: {e}")
-        bot.reply_to(message, f"❌ خطا در تحلیل عکس: {e}")
+        print(f"Photo error: {e}")
+        bot.reply_to(message, f"❌ خطا در تحلیل تصویر: {e}")
 
 @bot.message_handler(content_types=['voice', 'audio'])
 def handle_incoming_voice(message):
-    """Listens to voice messages, transcribes and answers them."""
     chat_id = message.chat.id
     if not is_verified(chat_id):
         bot.send_message(chat_id, "⛔ دسترسی محدود است. لطفاً با /start احراز هویت کنید.")
         return
 
-    status_msg = bot.reply_to(message, "🎙️ در حال گوش دادن به صدای شما و پردازش...")
+    status_msg = bot.reply_to(message, "🎙️ در حال گوش دادن و آماده‌سازی پاسخ صوتی...")
     try:
         file_id = message.voice.file_id if message.voice else message.audio.file_id
         file_info = bot.get_file(file_id)
         downloaded_audio = bot.download_file(file_info.file_path)
 
-        # Gemini supports audio understanding natively
         audio_part = gemini_types.Part.from_bytes(data=downloaded_audio, mime_type="audio/ogg")
+        voice_prompt = "این فایل صوتی را گوش کن و به زبان فارسی پاسخی کامل، گرم و صمیمی بده."
 
-        voice_prompt = (
-            "این فایل صوتی را با دقت گوش کن.\n"
-            "ابتدا متن صحبت گوینده را به صورت دقیق بنویس، سپس پاسخ کامل، هوشمندانه و محترمانه به زبان فارسی ارائه بده.\n"
-            "قالب پاسخ:\n"
-            "🗣️ **آنچه شنیدم:** ...\n\n"
-            "🤖 **پاسخ:** ..."
-        )
+        response = generate_with_model_fallback(client, contents=[audio_part, voice_prompt])
+        reply_text = response.text if (response and hasattr(response, 'text') and response.text) else "صدا دریافت شد."
 
-        response = generate_with_model_fallback(client,
-
-            contents=[audio_part, voice_prompt]
-        )
-
-        reply_text = response.text if response.text else "پیام صوتی دریافت شد اما متنی تشخیص داده نشد."
-        bot.reply_to(message, reply_text, parse_mode="Markdown")
+        bot.reply_to(message, reply_text)
         try:
             bot.delete_message(chat_id, status_msg.message_id)
         except Exception:
             pass
+
+        # Send Voice response back to user
+        try:
+            spoken = clean_text_for_tts(reply_text)
+            if spoken:
+                vp = text_to_voice(spoken, chat_id)
+                if vp and os.path.exists(vp):
+                    with open(vp, 'rb') as vf:
+                        bot.send_voice(chat_id, vf, caption="🎙️ پاسخ صوتی شما")
+                    try:
+                        os.remove(vp)
+                    except Exception:
+                        pass
+        except Exception as ve:
+            print(f"Voice generation error: {ve}")
     except Exception as e:
-        print(f"Voice processing error: {e}")
+        print(f"Voice error: {e}")
         bot.reply_to(message, f"❌ خطا در پردازش صدا: {e}")
 
-# --- General Message Handler (for Gemini/Tool Calls) ---
+# --- General Message Handler ---
 
-@bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
-    """Handles all non-command messages by passing them to the Gemini agent."""
     chat_id = message.chat.id
-    
-    # 1. Check for specific admin commands that don't go to Gemini
     if is_mohammad(message):
         if message.text == "/power_up":
             power_up_test(message)
@@ -684,48 +746,64 @@ def handle_all_messages(message):
         if message.text == "/find_job":
             job_hunter(message)
             return
-        
-    # 2. Process message through Gemini
-    try:
-        # The middleware should have already checked verification, but we check again for safety
-        if not is_verified(chat_id):
-            bot.send_message(chat_id, "❌ دسترسی محدود شده است. لطفاً با /start احراز هویت کنید.")
+
+    if not is_verified(chat_id):
+        bot.send_message(chat_id, "❌ دسترسی محدود شده است. لطفاً با /start احراز هویت کنید.")
+        return
+
+    text = message.text or ""
+
+    # 1. Natural Image Generation Intent
+    img_prompt = check_image_intent(text)
+    if img_prompt and len(img_prompt) > 2:
+        status_msg = bot.reply_to(message, f"🎨 در حال طراحی و خلق تصویر برای: *{img_prompt}*...", parse_mode="Markdown")
+        try:
+            import urllib.parse
+            encoded = urllib.parse.quote(img_prompt)
+            image_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+            bot.send_photo(chat_id, image_url, caption=f"🖼️ بفرمایید، تصویر شما برای: *{img_prompt}*", parse_mode="Markdown")
+            try:
+                bot.delete_message(chat_id, status_msg.message_id)
+            except Exception:
+                pass
             return
-            
-        # Get response from Super-Agent (Gemini with Tools)
-        gemini_text_response = get_gemini_response(message)
-        
-        # Send to Telegram
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ خطا در ساخت تصویر: {e}")
+            return
+
+    # 2. Main response (Gemini / OpenAI / Online search fallback)
+    try:
+        gemini_text_response = None
+        try:
+            gemini_text_response = get_gemini_response(message)
+        except Exception as api_err:
+            print(f"API error, trying online search fallback: {api_err}")
+            online_info = free_online_search(text)
+            if online_info:
+                gemini_text_response = f"🌐 اطلاعات آنلاین:\n{online_info}"
+
         if gemini_text_response:
-            bot.send_message(chat_id, gemini_text_response, parse_mode="Markdown")
-            
-        # Add to Memory
-        add_to_memory(chat_id, "user", message.text.strip())
-        add_to_memory(chat_id, "bot", gemini_text_response)
+            bot.send_message(chat_id, gemini_text_response)
 
-    except APIError as e:
-        error_message = f"An API error occurred: {e}"
-        print(error_message)
-        bot.send_message(chat_id, "متأسفانه در حال حاضر به دلیل خطای API نمی‌توانم پاسخ دهم. لطفاً بعداً دوباره تلاش کنید.")
+            # If user explicitly asked for voice
+            if any(w in text for w in ["ویس بده", "صوتی بگو", "ویس بفرست", "صوتی جواب", "با ویس"]):
+                try:
+                    spoken = clean_text_for_tts(gemini_text_response)
+                    vp = text_to_voice(spoken, chat_id)
+                    if vp and os.path.exists(vp):
+                        with open(vp, 'rb') as vf:
+                            bot.send_voice(chat_id, vf)
+                        try:
+                            os.remove(vp)
+                        except Exception:
+                            pass
+                except Exception as ve:
+                    print(f"Voice reply error: {ve}")
+        else:
+            bot.reply_to(message, "⚠️ در حال حاضر به دلیل محدودیت موقت سرورهای هوش مصنوعی امکان دریافت پاسخ نبود. لطفاً لحظاتی بعد مجدداً تلاش کنید.")
+
     except Exception as e:
-        error_message = f"An unexpected error occurred: {e}"
-        print(error_message)
-        bot.send_message(chat_id, "متأسفانه خطای ناشناخته‌ای رخ داد. لطفاً دوباره تلاش کنید.")
-
-# --- Helper Handlers (Admin-specific actions) ---
-
-# --- Helper Handlers (Admin-specific actions) ---
-
-def generate_resume():
-    """Simulated function to generate a resume for the bot."""
-    return (
-        "🤖 **رزومه ادمین هوشمند (Agent Mohammad):**\n"
-        "✅ مسلط به مدیریت گروه و حذف اسپم\n"
-        "✅ تولید محتوای صوتی و تصویری اختصاصی\n"
-        "✅ تحلیلگر تکنیکال بازار کریپتو\n"
-        "✅ روانشناس و آدم‌شناس حرفه‌ای\n"
-        "💰 حقوق درخواستی: ۵۰۰ ستاره ماهانه"
-    )
+        bot.reply_to(message, f"❌ خطا: {e}")
 
 @bot.message_handler(commands=['power_up'])
 def power_up_test(message):
