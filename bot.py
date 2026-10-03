@@ -130,31 +130,48 @@ def call_gemini_with_fallback(func, *args, **kwargs):
                 break
     raise last_error
 
-FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-1.5-flash"]
+FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
 model_name = FALLBACK_MODELS[0]
 
 def generate_with_model_fallback(c=None, contents=None, config=None):
-    """Tries available models if Google servers return 503 or 429 high demand."""
+    """Tries available models if Google servers return 404, 503 or 429 errors."""
     global client
     active_client = c or client
     if not active_client:
-        active_client = get_current_gemini_client()
-    last_err = None
-    for m in FALLBACK_MODELS:
         try:
-            return active_client.models.generate_content(
-                model=m,
-                contents=contents,
-                config=config
-            )
+            active_client = get_current_gemini_client()
         except Exception as e:
-            last_err = e
-            err_msg = str(e).lower()
-            if "503" in err_msg or "unavailable" in err_msg or "high demand" in err_msg or "429" in err_msg:
-                print(f"Model {m} is busy/unavailable, trying next model...")
+            print(f"Error getting Gemini client: {e}")
+            active_client = None
+
+    last_err = None
+    if active_client:
+        for m in FALLBACK_MODELS:
+            try:
+                res = active_client.models.generate_content(
+                    model=m,
+                    contents=contents,
+                    config=config
+                )
+                return res
+            except Exception as e:
+                last_err = e
+                print(f"Model {m} failed ({e}), trying next model...")
                 continue
-            raise e
-    raise last_err
+
+    # If all Gemini models failed and OpenAI is available, fallback to OpenAI
+    if openai_client and isinstance(contents, str):
+        print("Falling back to OpenAI...")
+        openai_resp = call_openai_fallback(contents)
+        if openai_resp:
+            class DummyResp:
+                text = openai_resp
+                function_calls = None
+            return DummyResp()
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("No AI model available.")
 
 
 # Map function names to actual functions for execution
