@@ -423,6 +423,124 @@ def set_voice_handler(call):
     bot.edit_message_text(result, call.message.chat.id, call.message.message_id)
     bot.answer_callback_query(call.id, result)
 
+
+
+# --- Multimodal & Generation Handlers ---
+
+import urllib.parse
+
+@bot.message_handler(commands=['generate', 'draw', 'image'])
+def handle_generate_image_command(message):
+    """Generates an image based on user prompt using AI."""
+    chat_id = message.chat.id
+    prompt = message.text.partition(' ')[2].strip()
+    if not prompt:
+        bot.reply_to(message, "🎨 لطفاً موضوع یا توصیف عکسی که می‌خوای رو بعد از دستور بنویس.
+مثال:
+", parse_mode="Markdown")
+        return
+
+    status_msg = bot.reply_to(message, f"🎨 در حال طراحی و خلق تصویر برای:
+_{prompt}_...", parse_mode="Markdown")
+    try:
+        # Prompt translation/enhancement or direct URL via Pollinations AI
+        encoded_prompt = urllib.parse.quote(prompt)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
+        
+        bot.send_photo(chat_id, image_url, caption=f"🖼️ تصویر شما برای: *{prompt}*", parse_mode="Markdown")
+        try:
+            bot.delete_message(chat_id, status_msg.message_id)
+        except Exception:
+            pass
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ خطا در ساخت تصویر: {e}")
+
+@bot.message_handler(content_types=['photo'])
+def handle_incoming_photo(message):
+    """Analyzes photos sent by the user using Gemini Vision."""
+    chat_id = message.chat.id
+    if not is_verified(chat_id):
+        bot.send_message(chat_id, "⛔ دسترسی محدود است. لطفاً با /start احراز هویت کنید.")
+        return
+
+    status_msg = bot.reply_to(message, "👁️ در حال نگاه کردن به عکس و تحلیل دقیق آن با هوش مصنوعی...")
+    try:
+        # Download highest resolution photo
+        photo_info = bot.get_file(message.photo[-1].file_id)
+        downloaded_file = bot.download_file(photo_info.file_path)
+
+        user_caption = message.caption.strip() if message.caption else "این تصویر را با جزئیات کامل و با دقت بالا به زبان فارسی تحلیل و بررسی کن."
+        image_part = gemini_types.Part.from_bytes(data=downloaded_file, mime_type="image/jpeg")
+
+        analysis_prompt = (
+            f"تصویر پیوست شده را ببین.
+"
+            f"درخواست یا سؤال کاربر: {user_caption}
+
+"
+            f"پاسخ را دقیق، ساختاریافته، جذاب و به زبان فارسی بنویس."
+        )
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[image_part, analysis_prompt]
+        )
+
+        reply_text = response.text if response.text else "متأسفانه نتوانستم تصویر را به طور کامل تحلیل کنم."
+        bot.reply_to(message, reply_text)
+        try:
+            bot.delete_message(chat_id, status_msg.message_id)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"Photo analysis error: {e}")
+        bot.reply_to(message, f"❌ خطا در تحلیل عکس: {e}")
+
+@bot.message_handler(content_types=['voice', 'audio'])
+def handle_incoming_voice(message):
+    """Listens to voice messages, transcribes and answers them."""
+    chat_id = message.chat.id
+    if not is_verified(chat_id):
+        bot.send_message(chat_id, "⛔ دسترسی محدود است. لطفاً با /start احراز هویت کنید.")
+        return
+
+    status_msg = bot.reply_to(message, "🎙️ در حال گوش دادن به صدای شما و پردازش...")
+    try:
+        file_id = message.voice.file_id if message.voice else message.audio.file_id
+        file_info = bot.get_file(file_id)
+        downloaded_audio = bot.download_file(file_info.file_path)
+
+        # Gemini supports audio understanding natively
+        audio_part = gemini_types.Part.from_bytes(data=downloaded_audio, mime_type="audio/ogg")
+
+        voice_prompt = (
+            "این فایل صوتی را با دقت گوش کن.
+"
+            "ابتدا متن صحبت گوینده را به صورت دقیق بنویس، سپس پاسخ کامل، هوشمندانه و محترمانه به زبان فارسی ارائه بده.
+"
+            "قالب پاسخ:
+"
+            "🗣️ **آنچه شنیدم:** ...
+
+"
+            "🤖 **پاسخ:** ..."
+        )
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[audio_part, voice_prompt]
+        )
+
+        reply_text = response.text if response.text else "پیام صوتی دریافت شد اما متنی تشخیص داده نشد."
+        bot.reply_to(message, reply_text, parse_mode="Markdown")
+        try:
+            bot.delete_message(chat_id, status_msg.message_id)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"Voice processing error: {e}")
+        bot.reply_to(message, f"❌ خطا در پردازش صدا: {e}")
+
 # --- General Message Handler (for Gemini/Tool Calls) ---
 
 @bot.message_handler(func=lambda message: True)
