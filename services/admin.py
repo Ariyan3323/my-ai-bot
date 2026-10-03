@@ -16,9 +16,8 @@ USER_LEVELS = {
     "Free": 1
 }
 
-# Path to the local storage on the 1TB hard drive (simulated for sandbox)
-# In a real environment, this would be D:/my_ai_bot/user_data.json
-USER_DATA_PATH = "/home/ubuntu/my-ai-bot/user_data.json" 
+# Portable path: a json file next to the project root, works on any machine
+USER_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "user_data.json")
 
 def load_user_data():
     """Loads user data from the local JSON file."""

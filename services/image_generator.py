@@ -13,8 +13,8 @@ def save_generated_image(image_url: str, prompt: str) -> str:
     Returns:
         The full path to the saved image file, or None if saving failed.
     """
-    # مسیر ذخیره‌سازی اصلاح شده برای محیط لینوکس (Sandbox)
-    save_path = "/home/ubuntu/my-ai-bot/gallery" 
+    # Portable path: a "gallery" folder next to the project root, works on any machine
+    save_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gallery")
     
     if not os.path.exists(save_path):
         os.makedirs(save_path)

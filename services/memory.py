@@ -3,8 +3,8 @@ import json
 import os
 from datetime import datetime
 
-# Path to the local storage on the 1TB hard drive (simulated for sandbox)
-MEMORY_FILE = "/home/ubuntu/my-ai-bot/user_memory.json"
+# Portable path: a json file next to the project root, works on any machine
+MEMORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "user_memory.json")
 MAX_MESSAGES = 10
 
 def load_memory():

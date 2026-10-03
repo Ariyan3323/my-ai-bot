@@ -9,5 +9,4 @@ pillow
 gTTS
 SpeechRecognition
 pydub
-google-cloud-text-to-speech
 psutil

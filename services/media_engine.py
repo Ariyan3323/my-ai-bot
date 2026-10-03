@@ -4,9 +4,8 @@ from datetime import datetime
 from moviepy.editor import ImageSequenceClip
 import time
 
-# تنظیمات هارد ۱ ترابایتی محمد عزیز
-# یادت باشه ویندوزت که بالا اومد، اگه اسم درایو هاردت چیزی غیر از D بود، این رو عوض کن
-BASE_PATH = "D:/my_ai_bot"
+# Portable path: "gallery"/"videos" folders next to the project root, works on any machine
+BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GALLERY_PATH = os.path.join(BASE_PATH, "gallery")
 VIDEO_PATH = os.path.join(BASE_PATH, "videos")
 

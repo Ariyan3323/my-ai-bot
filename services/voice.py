@@ -3,8 +3,8 @@ import os
 from gtts import gTTS
 from pydub import AudioSegment
 
-# Path to save audio files
-AUDIO_PATH = "/home/ubuntu/my-ai-bot/audio_responses"
+# Portable path: an "audio_responses" folder next to the project root
+AUDIO_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "audio_responses")
 
 def setup_audio_folder():
     """Ensures the audio folder exists."""
