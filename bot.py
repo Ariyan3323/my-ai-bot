@@ -24,6 +24,48 @@ from services.self_improve import grok_search, self_upgrade, check_autonomy, upd
 # ----------------------------------------------------------------------
 load_dotenv()
 
+# --- OpenAI Client & Multi-Engine Integration ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai_client = None
+if OPENAI_API_KEY:
+    try:
+        from openai import OpenAI
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        print("OpenAI client initialized successfully.")
+    except Exception as oe:
+        print(f"OpenAI initialization error: {oe}")
+
+def call_openai_fallback(prompt, image_bytes=None):
+    """Calls OpenAI GPT-4o as a multi-model fallback or supplementary engine."""
+    if not openai_client:
+        return None
+    try:
+        if image_bytes:
+            b64_img = base64.b64encode(image_bytes).decode('utf-8')
+            resp = openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                    ]
+                }],
+                max_tokens=1000
+            )
+            return resp.choices[0].message.content
+        else:
+            resp = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000
+            )
+            return resp.choices[0].message.content
+    except Exception as err:
+        print(f"OpenAI fallback error: {err}")
+        return None
+
+
 # Telegram and Gemini API Keys
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -760,3 +802,24 @@ def welcome_new_members(message):
         if new_member.id != bot.get_me().id:
             first_name = new_member.first_name or "دوست عزیز"
             bot.reply_to(message, f"خوش آمدید {first_name}! 🌹 اگر سؤالی داشتید، من دستیار هوش مصنوعی گروه در خدمتم.")
+
+@bot.message_handler(commands=['gpt', 'openai'])
+def handle_gpt_command(message):
+    """Direct query to OpenAI GPT-4o."""
+    prompt = message.text.partition(' ')[2].strip()
+    if not prompt:
+        bot.reply_to(message, "لطفاً سؤال یا درخواست خود را بعد از دستور /gpt بنویسید.")
+        return
+    if not openai_client:
+        bot.reply_to(message, "⚠️ کلید OPENAI_API_KEY در فایل .env تنظیم نشده است.")
+        return
+    status = bot.reply_to(message, "🧠 در حال پرسش از OpenAI GPT-4o...")
+    ans = call_openai_fallback(prompt)
+    if ans:
+        bot.reply_to(message, ans)
+    else:
+        bot.reply_to(message, "خطا در دریافت پاسخ از OpenAI.")
+    try:
+        bot.delete_message(message.chat.id, status.message_id)
+    except Exception:
+        pass
