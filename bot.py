@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 from dotenv import load_dotenv
 from telebot import TeleBot, types
 from google import genai
@@ -130,7 +131,7 @@ def call_gemini_with_fallback(func, *args, **kwargs):
                 break
     raise last_error
 
-FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
+FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"]
 model_name = FALLBACK_MODELS[0]
 
 def generate_with_model_fallback(c=None, contents=None, config=None):
@@ -160,14 +161,19 @@ def generate_with_model_fallback(c=None, contents=None, config=None):
                 continue
 
     # If all Gemini models failed and OpenAI is available, fallback to OpenAI
+    # OpenAI fallback is intentionally limited to plain-text prompts. Gemini
+    # function-calling responses require a separate tool adapter.
     if openai_client and isinstance(contents, str):
-        print("Falling back to OpenAI...")
+        print("All configured Gemini models failed; trying OpenAI fallback...")
         openai_resp = call_openai_fallback(contents)
         if openai_resp:
             class DummyResp:
                 text = openai_resp
                 function_calls = None
             return DummyResp()
+        print("OpenAI fallback did not return a response.")
+    elif not openai_client:
+        print("OpenAI fallback unavailable: OPENAI_API_KEY is missing or client initialization failed.")
 
     if last_err:
         raise last_err
