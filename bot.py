@@ -32,7 +32,57 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
     print("Error: TELEGRAM_TOKEN or GEMINI_API_KEY not found in environment variables.")
 
 bot = TeleBot(TELEGRAM_TOKEN)
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Gemini API Keys with Automatic Failover / Rotation
+raw_keys = os.getenv("GEMINI_API_KEYS", "")
+keys_list = [k.strip() for k in raw_keys.split(",") if k.strip()]
+single_key = os.getenv("GEMINI_API_KEY")
+if single_key and single_key not in keys_list:
+    keys_list.insert(0, single_key)
+
+# Fallback for extra indexed keys like GEMINI_API_KEY_1, GEMINI_API_KEY_2, etc.
+for i in range(1, 10):
+    k = os.getenv(f"GEMINI_API_KEY_{i}")
+    if k and k.strip() and k.strip() not in keys_list:
+        keys_list.append(k.strip())
+
+if not keys_list:
+    print("Warning: No GEMINI_API_KEY found in environment variables.")
+
+current_key_index = 0
+
+def get_current_gemini_client():
+    global current_key_index, keys_list
+    if not keys_list:
+        raise ValueError("هیچ کلید API جمینای تنظیم نشده است!")
+    return genai.Client(api_key=keys_list[current_key_index])
+
+def rotate_to_next_key():
+    global current_key_index, keys_list
+    if len(keys_list) > 1:
+        current_key_index = (current_key_index + 1) % len(keys_list)
+        print(f"Switched to Gemini API key index: {current_key_index} of {len(keys_list)}")
+        return True
+    return False
+
+def call_gemini_with_fallback(func, *args, **kwargs):
+    global keys_list
+    attempts = max(1, len(keys_list))
+    last_error = None
+    for _ in range(attempts):
+        try:
+            client = get_current_gemini_client()
+            return func(client, *args, **kwargs)
+        except Exception as e:
+            last_error = e
+            err_str = str(e).lower()
+            print(f"Gemini call error on key {current_key_index}: {e}")
+            if "429" in err_str or "quota" in err_str or "exhausted" in err_str or "key" in err_str or "not found" in err_str or "permission" in err_str:
+                if not rotate_to_next_key():
+                    break
+            else:
+                break
+    raise last_error
+
 model_name = "gemini-flash-latest"
 
 # Map function names to actual functions for execution
@@ -648,3 +698,44 @@ def handle_salary(call):
     bot.send_message(call.message.chat.id, "💵 محمد جان، حقوق این ماه من از ادمینی ۳ کانال، به حساب تتر شما واریز شد!")
 
 # The bot object is exported for use in main.py
+
+
+# --- Group & Channel Evolution Handlers ---
+
+@bot.my_chat_member_handler()
+def handle_bot_membership_change(update):
+    """Automatically introduces and configures itself when added to a group or channel."""
+    chat = update.chat
+    new_status = update.new_chat_member.status
+    if new_status in ['member', 'administrator']:
+        intro_text = (
+            f"🌟 **سلام به اعضای محترم {chat.title or 'گروه'}!**
+
+"
+            "من دستیار هوشمند، تحلیلگر بازار و ایجنت پیشرفته محمد هستم.
+"
+            "📌 **قابلیت‌ها:**
+"
+            "🔹 تحلیل عکس‌ها و تصاویر با دید بصری هوش مصنوعی
+"
+            "🔹 شنیدن و پاسخ به پیام‌های صوتی (ویس)
+"
+            "🔹 طراحی و ساخت تصویر با دستور 
+"
+            "🔹 پاسخ به سؤالات علمی، نگارش، حقوقی و ترید
+
+"
+            "آماده خدمت‌رسانی و یادگیری در این فضا هستم! 🚀"
+        )
+        try:
+            bot.send_message(chat.id, intro_text, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Failed to send group intro: {e}")
+
+@bot.message_handler(content_types=['new_chat_members'])
+def welcome_new_members(message):
+    """Greets new members entering the group."""
+    for new_member in message.new_chat_members:
+        if new_member.id != bot.get_me().id:
+            first_name = new_member.first_name or "دوست عزیز"
+            bot.reply_to(message, f"خوش آمدید {first_name}! 🌹 اگر سؤالی داشتید، من دستیار هوش مصنوعی گروه در خدمتم.")
