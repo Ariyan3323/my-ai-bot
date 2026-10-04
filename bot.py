@@ -737,6 +737,7 @@ def handle_incoming_voice(message):
 
 # --- General Message Handler ---
 
+@bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     chat_id = message.chat.id
     if is_mohammad(message):
