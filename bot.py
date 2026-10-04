@@ -130,7 +130,7 @@ def call_gemini_with_fallback(func, *args, **kwargs):
                 break
     raise last_error
 
-FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
+FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-flash-latest", "gemini-2.0-flash-exp", "gemini-2.5-flash"]
 model_name = FALLBACK_MODELS[0]
 
 def generate_with_model_fallback(c=None, contents=None, config=None):
