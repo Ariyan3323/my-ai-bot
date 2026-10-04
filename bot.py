@@ -589,14 +589,17 @@ def check_image_intent(msg_text: str):
         return None
     import re
     t = msg_text.strip()
-    kws = ["بکش", "نقاشی کن", "طراحی کن", "تصویر بساز", "عکس بساز", "تصویر یک", "عکس یک", "نقاشی یک", "draw ", "paint "]
+    kws = ["بکش", "نقاشی", "طراحی", "تصویر", "عکس", "draw", "paint", "image", "photo", "pic"]
+    # Skip if asking about an already sent photo
+    if any(neg in t for neg in ["این عکس", "تحلیل عکس", "این تصویر", "این چیه"]):
+        return None
     for k in kws:
         if k in t.lower():
             p = t
-            for w in ["لطفا", "لطفاً", "برام", "واسم", "میشه", "یه", "یک", "بکشی", "بکش", "نقاشی کن", "طراحی کن", "تصویر بساز", "عکس بساز"]:
+            for w in ["لطفا", "لطفاً", "برام", "واسم", "میشه", "یه", "یک", "بکشی", "بکش", "نقاشی کن", "نقاشی", "طراحی کن", "طراحی", "تصویر بساز", "تصویر یک", "عکس بساز", "عکس یک", "عکس", "بده", "کن"]:
                 p = re.sub(r'\b' + re.escape(w) + r'\b', '', p)
             p = p.strip()
-            return p if p else t
+            return p if len(p) > 1 else t
     return None
 
 def free_online_search(query: str) -> str:
@@ -803,6 +806,23 @@ def handle_all_messages(message):
 
         if gemini_text_response:
             bot.send_message(chat_id, gemini_text_response)
+
+            # Auto-detect if Gemini generated an image prompt instead of an image
+            if "Prompt:" in gemini_text_response or "پرامپت" in gemini_text_response:
+                try:
+                    import re, urllib.parse, urllib.request
+                    m = re.search(r'Prompt:\*?\*?\s*(?:>)?\s*\*?(.*?)\*?(?:\n\n|$)', gemini_text_response, re.DOTALL | re.IGNORECASE)
+                    extracted_prompt = m.group(1).strip().strip('*').strip() if m else None
+                    if extracted_prompt and len(extracted_prompt) > 5:
+                        bot.send_chat_action(chat_id, 'upload_photo')
+                        enc = urllib.parse.quote(extracted_prompt[:300])
+                        img_url = f"https://image.pollinations.ai/prompt/{enc}?width=1024&height=1024&nologo=true"
+                        req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req, timeout=30) as r:
+                            img_b = r.read()
+                        bot.send_photo(chat_id, img_b, caption="🖼️ تصویر طراحی شده:")
+                except Exception as pe:
+                    print(f"Auto-draw prompt error: {pe}")
 
             # If user explicitly asked for voice
             if any(w in text.lower() for w in ["ویس", "صوتی", "بخون", "voice", "audio"]):
