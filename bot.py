@@ -134,30 +134,37 @@ FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-flash-la
 model_name = FALLBACK_MODELS[0]
 
 def generate_with_model_fallback(c=None, contents=None, config=None):
-    """Tries available models if Google servers return 404, 503 or 429 errors."""
-    global client
-    active_client = c or client
-    if not active_client:
-        try:
-            active_client = get_current_gemini_client()
-        except Exception as e:
-            print(f"Error getting Gemini client: {e}")
-            active_client = None
-
+    """Tries available models and rotates keys if Google servers return errors."""
+    global client, current_key_index, keys_list
+    attempts = max(1, len(keys_list)) if keys_list else 1
     last_err = None
-    if active_client:
-        for m in FALLBACK_MODELS:
-            try:
-                res = active_client.models.generate_content(
-                    model=m,
-                    contents=contents,
-                    config=config
-                )
-                return res
-            except Exception as e:
-                last_err = e
-                print(f"Model {m} failed ({e}), trying next model...")
-                continue
+    for _ in range(attempts):
+        try:
+            active_client = get_current_gemini_client() if keys_list else (c or client)
+        except Exception:
+            active_client = c or client
+
+        if active_client:
+            for m in FALLBACK_MODELS:
+                try:
+                    res = active_client.models.generate_content(
+                        model=m,
+                        contents=contents,
+                        config=config
+                    )
+                    return res
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e).lower()
+                    print(f"Model {m} failed ({e}), trying next model...")
+                    if "429" in err_str or "quota" in err_str or "exhausted" in err_str:
+                        break
+                    continue
+        if keys_list and len(keys_list) > 1:
+            if not rotate_to_next_key():
+                break
+        else:
+            break
 
     # If all Gemini models failed and OpenAI is available, fallback to OpenAI
     if openai_client and isinstance(contents, str):
@@ -653,12 +660,14 @@ def handle_incoming_photo(message):
         reply_text = None
 
         # 1. Try Gemini
+        gemini_error = None
         try:
             image_part = gemini_types.Part.from_bytes(data=downloaded_file, mime_type="image/jpeg")
-            resp = generate_with_model_fallback(client, contents=[image_part, user_caption])
+            resp = generate_with_model_fallback(contents=[image_part, user_caption])
             if resp and hasattr(resp, 'text') and resp.text:
                 reply_text = resp.text
         except Exception as ge:
+            gemini_error = ge
             print(f"Gemini photo error: {ge}")
 
         # 2. OpenAI GPT-4o Vision Fallback
@@ -684,7 +693,10 @@ def handle_incoming_photo(message):
                 print(f"OpenAI photo error: {oe}")
 
         if not reply_text:
-            reply_text = "متأسفانه در تحلیل تصویر خطایی رخ داد. لطفاً کیفیت عکس را بررسی یا مجدداً ارسال کنید."
+            if gemini_error:
+                reply_text = f"⚠️ خطا در تحلیل تصویر با جمینای: {gemini_error}"
+            else:
+                reply_text = "متأسفانه در تحلیل تصویر خطایی رخ داد. لطفاً کیفیت عکس را بررسی یا مجدداً ارسال کنید."
 
         bot.reply_to(message, reply_text)
         try:
