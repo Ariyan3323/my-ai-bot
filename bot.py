@@ -623,10 +623,13 @@ def handle_generate_image_command(message):
     status_msg = bot.reply_to(message, f"🎨 در حال طراحی و خلق تصویر برای: _{prompt}_...", parse_mode="Markdown")
     try:
         # Prompt translation/enhancement or direct URL via Pollinations AI
+        import urllib.request
         encoded_prompt = urllib.parse.quote(prompt)
         image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
-        
-        bot.send_photo(chat_id, image_url, caption=f"🖼️ تصویر شما برای: *{prompt}*", parse_mode="Markdown")
+        img_req = urllib.request.Request(image_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(img_req, timeout=35) as img_resp:
+            img_bytes = img_resp.read()
+        bot.send_photo(chat_id, img_bytes, caption=f"🖼️ تصویر شما برای: *{prompt}*", parse_mode="Markdown")
         try:
             bot.delete_message(chat_id, status_msg.message_id)
         except Exception:
@@ -759,10 +762,13 @@ def handle_all_messages(message):
     if img_prompt and len(img_prompt) > 2:
         status_msg = bot.reply_to(message, f"🎨 در حال طراحی و خلق تصویر برای: *{img_prompt}*...", parse_mode="Markdown")
         try:
-            import urllib.parse
+            import urllib.parse, urllib.request
             encoded = urllib.parse.quote(img_prompt)
             image_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
-            bot.send_photo(chat_id, image_url, caption=f"🖼️ بفرمایید، تصویر شما برای: *{img_prompt}*", parse_mode="Markdown")
+            img_req = urllib.request.Request(image_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(img_req, timeout=35) as img_resp:
+                img_bytes = img_resp.read()
+            bot.send_photo(chat_id, img_bytes, caption=f"🖼️ بفرمایید، تصویر شما برای: *{img_prompt}*", parse_mode="Markdown")
             try:
                 bot.delete_message(chat_id, status_msg.message_id)
             except Exception:
@@ -787,13 +793,17 @@ def handle_all_messages(message):
             bot.send_message(chat_id, gemini_text_response)
 
             # If user explicitly asked for voice
-            if any(w in text for w in ["ویس بده", "صوتی بگو", "ویس بفرست", "صوتی جواب", "با ویس"]):
+            if any(w in text.lower() for w in ["ویس", "صوتی", "بخون", "voice", "audio"]):
                 try:
                     spoken = clean_text_for_tts(gemini_text_response)
                     vp = text_to_voice(spoken, chat_id)
                     if vp and os.path.exists(vp):
                         with open(vp, 'rb') as vf:
-                            bot.send_voice(chat_id, vf)
+                            try:
+                                bot.send_voice(chat_id, vf)
+                            except Exception:
+                                vf.seek(0)
+                                bot.send_audio(chat_id, vf, title="پاسخ صوتی")
                         try:
                             os.remove(vp)
                         except Exception:
