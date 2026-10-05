@@ -2,8 +2,11 @@ import os
 import json
 import base64
 import re
-from datetime import datetime
+import ipaddress
+import socket
+from datetime import datetime, timezone
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 from telebot import TeleBot, types
@@ -342,12 +345,53 @@ def _rank_search_results(results, category, query=""):
         item.pop("_score", None)
     return ranked
 
+IRAN_TZ = ZoneInfo("Asia/Tehran")
+
+def get_iran_now():
+    """Authoritative runtime clock for Iran; never infer today's date from the LLM."""
+    return datetime.now(timezone.utc).astimezone(IRAN_TZ)
+
+def format_persian_date(dt=None):
+    """Convert runtime Gregorian date to the Persian calendar."""
+    dt = dt or get_iran_now()
+    try:
+        import jdatetime
+        jd = jdatetime.datetime.fromgregorian(datetime=dt)
+        weekdays = ["دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه", "شنبه", "یکشنبه"]
+        months = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور", "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"]
+        return f"{weekdays[jd.weekday()]} {jd.day} {months[jd.month - 1]} {jd.year}"
+    except Exception as e:
+        print(f"Persian calendar conversion unavailable: {e}")
+        return dt.strftime("%Y-%m-%d")
+
+def current_time_answer():
+    now = get_iran_now()
+    return (
+        f"🕐 زمان ایران: {now.strftime('%H:%M:%S')}\n"
+        f"📅 میلادی: {now.strftime('%Y-%m-%d')}\n"
+        f"🗓️ شمسی: {format_persian_date(now)}\n"
+        f"🌍 منطقه زمانی: Asia/Tehran"
+    )
+
+def _is_private_or_local_host(hostname):
+    host = (hostname or "").strip().lower().rstrip(".")
+    if host in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        for info in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return True
+    except Exception:
+        return True
+    return False
+
 def _is_safe_http_url(url):
     try:
         p = urlparse(url)
-        return p.scheme in ("http", "https") and bool(p.netloc)
-    except Exception:
-        return False
+        if p.scheme not in ("http", "https") or not p.hostname:
+            return False
+        return not _is_private_or_local_host(p.hostname)
 
 def _extract_page_date(html):
     patterns = [
@@ -384,7 +428,7 @@ def _fetch_and_verify_result(item):
             return None
         html = response.text[:1_500_000]
         page_date = _extract_page_date(html)
-        now = datetime.now().astimezone()
+        now = get_iran_now()
         if page_date:
             if page_date.tzinfo is None:
                 page_date = page_date.replace(tzinfo=now.tzinfo)
@@ -483,9 +527,11 @@ def search_web(query, max_results=5):
                             search_query,
                             region="wt-wt",
                             safesearch="moderate",
-                            timelimit="m" if any(x in query.lower() for x in (
-                                "امروز", "الان", "آخرین", "جدیدترین", "today", "now", "latest"
-                            )) else None,
+                            timelimit="d" if any(x in query.lower() for x in (
+                                "امروز", "همین امروز", "الان", "today", "now"
+                            )) else ("w" if any(x in query.lower() for x in (
+                                "آخرین", "جدیدترین", "latest", "recent"
+                            )) else None),
                             max_results=max(3, min(int(max_results), 8)),
                         )
                         collected.extend(list(rows or []))
@@ -525,69 +571,72 @@ def search_web(query, max_results=5):
         return []
 
 # ----------------------------------------------------------------------
-# Deterministic web-search routing
+# Deterministic runtime routing
 # ----------------------------------------------------------------------
 
-def is_web_search_intent(text):
-    """Detect requests that explicitly need fresh/current web evidence.
-    We route these directly to search_web instead of relying on LLM tool selection,
-    so a model without function-calling support cannot silently say web search is unavailable.
-    """
+def is_time_date_intent(text):
+    """Handle Iran date/time questions before any LLM."""
     t = (text or "").lower()
     triggers = (
-        "امروز", "الان", "آخرین", "جدیدترین", "خبر", "اخبار", "به‌روز", "بروز",
-        "جستجو", "جست‌وجو", "سرچ", "منبع", "لینک منبع", "اینترنت", "آنلاین",
-        "today", "now", "latest", "recent", "current", "news", "search", "source", "sources",
-        "verify", "fact check"
+        "ساعت چنده", "ساعت چند", "چه ساعتی", "زمان الان", "زمان فعلی",
+        "الان ساعت", "تاریخ امروز", "امروز چندمه", "امروز چه روزیه",
+        "امروز چه روزی", "تاریخ چنده", "تاریخ شمسی", "تاریخ میلادی",
+        "روز هفته", "what time is it", "current time", "today's date",
+        "what date is it", "current date", "iran time", "tehran time"
+    )
+    return any(x in t for x in triggers)
+
+def is_web_search_intent(text):
+    """Detect requests that explicitly need fresh/current web evidence."""
+    t = (text or "").lower()
+    triggers = (
+        "جستجو", "جست‌وجو", "سرچ", "وب", "اینترنت", "آنلاین", "منبع", "منابع",
+        "لینک منبع", "خبر", "اخبار", "آخرین", "جدیدترین", "به‌روز", "بروز",
+        "همین الان", "الان چه خبر", "امروز چه خبر",
+        "today", "now", "latest", "recent", "current", "news", "search",
+        "source", "sources", "verify", "fact check", "web"
     )
     return any(x in t for x in triggers)
 
 def build_verified_search_context(query, results):
     """Turn verified search results into explicit evidence for the answering model."""
-    lines = [
-        "WEB EVIDENCE (verified pages fetched successfully; use only these sources):",
-    ]
+    lines = ["WEB EVIDENCE (verified pages fetched successfully; use only these sources):"]
     for i, item in enumerate(results, 1):
         lines.append(
-            f"[{i}] {item.get('title','')}\\n"
-            f"Source: {item.get('source','')}\\n"
-            f"Published: {item.get('published_at') or 'not stated'}\\n"
-            f"URL: {item.get('url','')}\\n"
+            f"[{i}] {item.get('title','')}\n"
+            f"Source: {item.get('source','')}\n"
+            f"Published: {item.get('published_at') or 'not stated'}\n"
+            f"URL: {item.get('url','')}\n"
             f"Snippet: {item.get('snippet','')}"
         )
-    return "\\n\\n".join(lines)
+    return "\n\n".join(lines)
 
 def answer_with_web_evidence(user_prompt, user_id):
-    """Search first, then ask the LLM to synthesize only from returned evidence."""
+    """Search first, then synthesize only from returned evidence."""
     results = search_web(user_prompt, max_results=6)
     if not results:
-        return (
-            "🔎 جستجوی وب در این لحظه منبع قابل‌تأییدی پیدا نکرد. "
-            "نمی‌خواهم خبر یا لینک ساختگی بدهم؛ اگر خواستی دوباره تلاش می‌کنم."
-        )
+        return "🔎 جستجوی وب منبع قابل‌تأییدی پیدا نکرد؛ خبر یا لینک ساختگی ارائه نمی‌کنم."
 
     evidence = build_verified_search_context(user_prompt, results)
     personality = get_personality(user_id)
     prompt = (
-        f"درخواست کاربر: {user_prompt}\\n\\n"
-        f"{evidence}\\n\\n"
-        "وظیفه: پاسخ فارسی طبیعی و کوتاه بده. فقط از شواهد بالا استفاده کن. "
-        "اگر منابع با هم اختلاف دارند، اختلاف را واضح بگو. برای ادعاهای خبری، "
-        "حداقل دو منبع مستقل را در صورت وجود مقایسه کن. عنوان، تاریخ و URL را تغییر نده. "
-        "در پایان منابع را به‌صورت شماره‌دار با لینک مستقیم بیاور. "
-        f"سبک پاسخ متناسب با شخصیت کاربر: {personality}."
+        f"درخواست کاربر: {user_prompt}\n\n{evidence}\n\n"
+        "پاسخ را به فارسی طبیعی و دقیق بده. فقط از شواهد بالا استفاده کن. "
+        "برای خبرها در صورت وجود حداقل دو منبع مستقل را مقایسه کن و اختلاف‌ها را بگو. "
+        "عنوان، تاریخ و URL را تغییر نده. هر ادعای زمانی را با تاریخ ایران مقایسه کن. "
+        "در پایان منابع را شماره‌دار با URL مستقیم بیاور. هیچ ادعای خارج از شواهد اضافه نکن. "
+        f"سبک پاسخ: {personality}."
     )
     try:
         response = generate_with_model_fallback(contents=prompt)
-        text = getattr(response, "text", None)
-        if text:
-            return text
+        answer = getattr(response, "text", None)
+        if answer:
+            return answer
     except Exception as e:
         print(f"Web evidence synthesis failed: {e}")
 
-    # Never lose the verified evidence if the answering model is unavailable.
-    return "🌐 منابع قابل‌تأیید پیدا شد:\\n\\n" + "\\n\\n".join(
-        f"{i}. {r.get('title','')}\\n{r.get('published_at') or 'تاریخ اعلام نشده'}\\n{r.get('url','')}"
+    return "🌐 منابع قابل‌تأیید:\n\n" + "\n\n".join(
+        f"{i}. {r.get('title','')}\n{r.get('published_at') or 'تاریخ اعلام نشده'}\n{r.get('url','')}"
         for i, r in enumerate(results, 1)
     )
 
@@ -636,13 +685,15 @@ def free_online_search(query):
     )
 
 def build_system_instruction(user_personality):
-    now = datetime.now().astimezone()
+    now = get_iran_now()
     current_date_str = now.strftime("%Y-%m-%d %H:%M:%S %z (%A)")
+    persian_date = format_persian_date(now)
     return (
         "You are a Super-Agent for the Iranian market, specialized in trading, "
         "Iranian law, academic tutoring, professional writing, web research, "
         "and practical assistance. Your primary language is Farsi (Persian). "
         f"Current exact runtime date and time: {current_date_str}. "
+        f"Current Persian date in Iran: {persian_date}. "
         f"The user's personality is analyzed as: '{user_personality}'. "
         "Use the provided tools whenever they are relevant. "
         "Current/web requests are routed through a deterministic web-search layer before synthesis. "
@@ -823,7 +874,10 @@ def handle_all_messages(message):
     try:
         bot.send_chat_action(chat_id, "typing")
         try:
-            if is_web_search_intent(text):
+            if is_time_date_intent(text):
+                print(f"[TIME ROUTER] authoritative Iran clock for: {text}")
+                response_text = current_time_answer()
+            elif is_web_search_intent(text):
                 print(f"[WEB ROUTER] deterministic search for: {text}")
                 response_text = answer_with_web_evidence(text, chat_id)
             else:
@@ -842,11 +896,20 @@ def handle_all_messages(message):
 
         if response_text:
             bot.send_message(chat_id, response_text)
+            try:
+                add_to_memory(chat_id, "user", text)
+                add_to_memory(chat_id, "assistant", response_text)
+            except Exception as memory_err:
+                print(f"Memory save skipped: {memory_err}")
         else:
             bot.reply_to(message, "⚠️ فعلاً سرویس هوش مصنوعی در دسترس نیست. لطفاً چند لحظه بعد دوباره تلاش کن.")
     except Exception as e:
         print(f"Message pipeline error: {e}")
         bot.reply_to(message, "❌ خطایی در پردازش پیام رخ داد. لطفاً دوباره تلاش کن.")
+
+@bot.message_handler(commands=["time", "date"])
+def handle_time_command(message):
+    bot.reply_to(message, current_time_answer())
 
 @bot.message_handler(commands=["power_up"])
 def power_up_test(message):
