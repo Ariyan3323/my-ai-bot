@@ -622,6 +622,27 @@ def translate_prompt_to_english(prompt_text: str) -> str:
 
     return prompt_text
 
+
+def free_ai_text_fallback(prompt_text: str) -> str:
+    """Free unlimited AI fallback when Gemini hits quota exhaustion (RESOURCE_EXHAUSTED / 429)."""
+    try:
+        import urllib.request, urllib.parse
+        system_ctx = (
+            "تو دستیار هوشمند و توانمند فارسی به نام سام هستی. "
+            "به زبان فارسی روان، شیوا و کامل به این درخواست پاسخ بده:\n"
+        )
+        full_p = system_ctx + prompt_text
+        encoded = urllib.parse.quote(full_p)
+        url = f"https://text.pollinations.ai/{encoded}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            res_text = resp.read().decode('utf-8')
+            if res_text and len(res_text.strip()) > 5:
+                return res_text.strip()
+    except Exception as e:
+        print(f"Pollinations text fallback error: {e}")
+    return None
+
 def check_image_intent(msg_text: str):
     if not msg_text:
         return None
@@ -864,16 +885,18 @@ def handle_all_messages(message):
             bot.send_message(chat_id, f"❌ خطا در ساخت تصویر: {e}")
             return
 
-    # 2. Main response (Gemini / OpenAI / Online search fallback)
+    # 2. Main response (Gemini / OpenAI / Free AI fallback)
     try:
         gemini_text_response = None
         try:
             gemini_text_response = get_gemini_response(message)
         except Exception as api_err:
-            print(f"API error, trying online search fallback: {api_err}")
-            online_info = free_online_search(text)
-            if online_info:
-                gemini_text_response = f"🌐 اطلاعات آنلاین:\n{online_info}"
+            print(f"Gemini API error ({api_err}), switching to unlimited free AI fallback...")
+            gemini_text_response = free_ai_text_fallback(text)
+            if not gemini_text_response:
+                online_info = free_online_search(text)
+                if online_info:
+                    gemini_text_response = f"🌐 اطلاعات آنلاین:\n{online_info}"
 
         if gemini_text_response:
             bot.send_message(chat_id, gemini_text_response)
