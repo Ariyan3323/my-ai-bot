@@ -850,6 +850,19 @@ def handle_incoming_voice(message):
 # --- General Message Handler ---
 
 @bot.message_handler(func=lambda message: True)
+
+def check_voice_intent(text: str) -> bool:
+    """Checks if the user explicitly asked for a voice message."""
+    if not text:
+        return False
+    t = text.strip().lower()
+    keywords = [
+        "ویس بده", "ویس بفرست", "صوتی بگو", "با صدا بگو", 
+        "با ویس بگو", "بصورت صوتی", "به صورت صوتی", "صوتی جواب بده", 
+        "ویس بگو", "صدا بده", "حرف بزن", "برام ویس بده", "یک ویس بده"
+    ]
+    return any(k in t for k in keywords)
+
 def handle_all_messages(message):
     chat_id = message.chat.id
     if is_mohammad(message):
@@ -888,6 +901,47 @@ def handle_all_messages(message):
         except Exception as e:
             bot.send_message(chat_id, f"❌ خطا در ساخت تصویر: {e}")
             return
+
+
+    # 1.5 Natural Voice Response Intent
+    if check_voice_intent(text):
+        bot.send_chat_action(chat_id, "record_voice")
+        status_msg = bot.reply_to(message, "🎙️ در حال آماده‌سازی پاسخ صوتی...")
+        
+        # Clean prompt for AI
+        ai_prompt = text
+        for kw in ["ویس بده", "ویس بفرست", "صوتی بگو", "با صدا بگو", "با ویس بگو", "بصورت صوتی", "صوتی جواب بده"]:
+            ai_prompt = ai_prompt.replace(kw, "")
+        ai_prompt = ai_prompt.strip()
+        if not ai_prompt:
+            ai_prompt = "سلام! یک پیام خوش‌آمدگویی گرم، کوتاه و صمیمی به زبان فارسی بنویس."
+        else:
+            ai_prompt = f"به این سوال یا پیام به طور کامل، کوتاه و صمیمی به زبان فارسی پاسخ بده تا تبدیل به ویس شود: {ai_prompt}"
+
+        answer = None
+        try:
+            answer = generate_with_model_fallback(contents=ai_prompt)
+        except Exception:
+            answer = free_ai_text_fallback(ai_prompt)
+
+        if not answer:
+            answer = "سلام دوست من! در حال حاضر سیستم صوتی آماده است، بفرما در خدمتم."
+
+        voice_path = text_to_voice(answer, chat_id)
+        if voice_path and os.path.exists(voice_path):
+            try:
+                with open(voice_path, "rb") as audio:
+                    bot.send_voice(chat_id, audio, caption=f"🎙️ {answer[:200]}..." if len(answer) > 200 else f"🎙️ {answer}")
+                try:
+                    bot.delete_message(chat_id, status_msg.message_id)
+                except Exception:
+                    pass
+                return
+            except Exception as e:
+                print(f"Error sending voice: {e}")
+
+        bot.send_message(chat_id, answer)
+        return
 
     # 2. Main response (Gemini / OpenAI / Free AI fallback)
     try:
