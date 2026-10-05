@@ -809,6 +809,25 @@ def handle_all_messages(message):
 
     text = message.text or ""
 
+    # Deterministic utility commands must never be answered by model memory.
+    if text.strip().lower() in ("/time", "/date", "/now"):
+        bot.reply_to(message, current_time_answer())
+        return
+
+    if text.strip().lower() == "/status":
+        status = (
+            "🩺 وضعیت SAM Bot\n"
+            f"🤖 Gemini keys: {len(keys_list)}\n"
+            f"🌐 OpenRouter: {'ON' if OPENROUTER_API_KEY else 'OFF'}\n"
+            f"🔎 Brave: {'ON' if BRAVE_SEARCH_API_KEY else 'OFF'}\n"
+            f"🔎 Tavily: {'ON' if TAVILY_API_KEY else 'OFF'}\n"
+            f"🧠 OpenAI: {'ON' if openai_client else 'OFF'}\n"
+            f"🕐 Iran clock: ON\n"
+            "🛡️ Web URL safety: ON"
+        )
+        bot.reply_to(message, status)
+        return
+
     img_prompt = check_image_intent(text)
     if img_prompt and len(img_prompt) > 2:
         status_msg = bot.reply_to(message, f"🎨 در حال خلق تصویر برای: *{img_prompt}*...", parse_mode="Markdown")
