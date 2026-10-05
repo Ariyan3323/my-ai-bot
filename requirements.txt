@@ -12,3 +12,4 @@ pydub
 psutil
 openai
 ddgs
+jdatetime>=5.2.0
