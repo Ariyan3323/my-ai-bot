@@ -373,6 +373,25 @@ def current_time_answer():
         f"🌍 منطقه زمانی: Asia/Tehran"
     )
 
+def clean_model_output(text):
+    """Remove third-party ads/boilerplate that must never reach the user."""
+    if not text:
+        return text
+    blocked = (
+        "Support Pollinations.AI",
+        "Powered by Pollinations.AI",
+        "🌸 Ad 🌸",
+        "pollinations.ai/redirect/kofi",
+    )
+    lines = []
+    for line in str(text).splitlines():
+        if any(marker.lower() in line.lower() for marker in blocked):
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
 def _is_private_or_local_host(hostname):
     host = (hostname or "").strip().lower().rstrip(".")
     if host in {"localhost", "localhost.localdomain"}:
@@ -575,8 +594,29 @@ def search_web(query, max_results=5):
 # ----------------------------------------------------------------------
 
 def is_time_date_intent(text):
-    """Handle Iran date/time questions before any LLM."""
-    t = (text or "").lower()
+    """Handle exact date/time questions before any LLM."""
+    t = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not t:
+        return False
+
+    # News/current-events questions must go to web search instead.
+    if is_web_search_intent(t) and any(x in t for x in (
+        "خبر", "اخبار", "چه خبر", "آخرین", "جدیدترین", "search", "news"
+    )):
+        return False
+
+    exact_patterns = (
+        r"^(?:الان )?(?:ساعت )?(?:چند(?:ه| است)?|چنده|چند است)\??$",
+        r"^(?:الان|همین الان) (?:ساعت )?(?:چنده|چند است|چند)\??$",
+        r"^(?:تاریخ|امروز) (?:چنده|چندمه|چه تاریخیه|چه روزیه|چه روزی(?:ه| است)?)\??$",
+        r"^(?:امروز|الان) چندمه\??$",
+        r"^(?:چه )?(?:روز|روز هفته) (?:امروزه|امروز(?:ه| است)?)\??$",
+        r"^(?:تاریخ )?(?:شمسی|میلادی) (?:امروز )?(?:چنده|چندمه)\??$",
+        r"^(?:زمان|ساعت) (?:الان|فعلی|ایران|تهران)\??$",
+    )
+    if any(re.search(p, t) for p in exact_patterns):
+        return True
+
     triggers = (
         "ساعت چنده", "ساعت چند", "چه ساعتی", "زمان الان", "زمان فعلی",
         "الان ساعت", "تاریخ امروز", "امروز چندمه", "امروز چه روزیه",
@@ -871,6 +911,7 @@ def handle_all_messages(message):
         except Exception:
             answer = free_ai_text_fallback(ai_prompt)
 
+        answer = clean_model_output(answer)
         if not answer:
             answer = "سلام دوست من! در حال حاضر سیستم صوتی آماده است، بفرما در خدمتم."
 
@@ -913,6 +954,7 @@ def handle_all_messages(message):
                 except Exception as search_err:
                     print(f"Fallback online search error: {search_err}")
 
+        response_text = clean_model_output(response_text)
         if response_text:
             bot.send_message(chat_id, response_text)
             try:
