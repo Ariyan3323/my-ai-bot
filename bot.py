@@ -584,6 +584,44 @@ def clean_text_for_tts(t: str) -> str:
         t = t[:380] + '...'
     return t.strip()
 
+
+def translate_prompt_to_english(prompt_text: str) -> str:
+    """Translates Persian image requests into descriptive English prompts for AI image models."""
+    if not prompt_text:
+        return "beautiful artistic digital painting"
+    
+    ascii_count = sum(1 for c in prompt_text if ord(c) < 128)
+    if ascii_count > len(prompt_text) * 0.7:
+        return prompt_text
+
+    try:
+        trans_prompt = (
+            "You are an expert AI prompt engineer. Translate and enhance this Persian image request "
+            "into a concise, vivid English prompt suitable for Flux/Stable Diffusion. "
+            "Only return the English prompt text, without any explanations, quotes or conversational filler:\n"
+            + prompt_text
+        )
+        resp = generate_with_model_fallback(contents=trans_prompt)
+        if resp and hasattr(resp, 'text') and resp.text:
+            cleaned = resp.text.strip().replace('"', '').replace(chr(10), ' ')
+            if len(cleaned) > 2 and not any('\u0600' <= c <= '\u06ff' for c in cleaned[:10]):
+                return cleaned
+    except Exception as e:
+        print(f"Prompt translation error: {e}")
+
+    fa_map = {
+        "گل زرد": "yellow flower, bright vibrant petals, detailed macro photography, 4k",
+        "گل سرخ": "red rose, elegant petals, romantic soft lighting, 4k resolution",
+        "ماشین": "sleek modern sports car, 4k photorealistic",
+        "فراری": "red Ferrari sports car on road, dynamic cinematic lighting, ultra realistic",
+        "طبیعت": "breathtaking natural landscape, mountains and river, photorealistic"
+    }
+    for k, v in fa_map.items():
+        if k in prompt_text:
+            return v
+
+    return prompt_text
+
 def check_image_intent(msg_text: str):
     if not msg_text:
         return None
@@ -757,7 +795,7 @@ def handle_incoming_voice(message):
         audio_part = gemini_types.Part.from_bytes(data=downloaded_audio, mime_type="audio/ogg")
         voice_prompt = "این فایل صوتی را گوش کن و به زبان فارسی پاسخی کامل، گرم و صمیمی بده."
 
-        response = generate_with_model_fallback(client, contents=[audio_part, voice_prompt])
+        response = generate_with_model_fallback(contents=[audio_part, voice_prompt])
         reply_text = response.text if (response and hasattr(response, 'text') and response.text) else "صدا دریافت شد."
 
         bot.reply_to(message, reply_text)
@@ -806,13 +844,15 @@ def handle_all_messages(message):
     # 1. Natural Image Generation Intent
     img_prompt = check_image_intent(text)
     if img_prompt and len(img_prompt) > 2:
-        status_msg = bot.reply_to(message, f"🎨 در حال طراحی و خلق تصویر برای: *{img_prompt}*...", parse_mode="Markdown")
+        status_msg = bot.reply_to(message, f"🎨 در حال خلق تصویر برای: *{img_prompt}*...", parse_mode="Markdown")
         try:
             import urllib.parse, urllib.request
-            encoded = urllib.parse.quote(img_prompt)
+            en_prompt = translate_prompt_to_english(img_prompt)
+            print(f"Translated image prompt: '{img_prompt}' -> '{en_prompt}'")
+            encoded = urllib.parse.quote(en_prompt)
             image_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
             img_req = urllib.request.Request(image_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(img_req, timeout=35) as img_resp:
+            with urllib.request.urlopen(img_req, timeout=40) as img_resp:
                 img_bytes = img_resp.read()
             bot.send_photo(chat_id, img_bytes, caption=f"🖼️ بفرمایید، تصویر شما برای: *{img_prompt}*", parse_mode="Markdown")
             try:
