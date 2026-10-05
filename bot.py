@@ -849,6 +849,22 @@ def handle_all_messages(message):
 
     text = message.text or ""
 
+    # HARD GATE: exact time/date questions are answered locally and MUST NOT
+    # reach Gemini/OpenAI, even if another intent detector also matches.
+    normalized_text = re.sub(r"[؟?!،,:;]+$", "", re.sub(r"\\s+", " ", text.strip().lower()))
+    if normalized_text in (
+        "الان ساعت چنده", "الآن ساعت چنده", "همین الان ساعت چنده",
+        "ساعت چنده", "ساعت چند", "الان ساعت چند", "الآن ساعت چند",
+        "زمان الان", "زمان فعلی", "ساعت فعلی",
+        "امروز چندمه", "امروز چه تاریخیه", "تاریخ امروز چنده",
+        "تاریخ شمسی امروز چنده", "تاریخ امروز",
+        "what time is it", "what's the time", "current time",
+        "what date is it", "today's date", "current date",
+    ):
+        print(f"[HARD TIME GATE] bypassing all AI models for: {text!r}")
+        bot.reply_to(message, current_time_answer())
+        return
+
     # Deterministic utility commands must never be answered by model memory.
     if text.strip().lower() in ("/time", "/date", "/now"):
         bot.reply_to(message, current_time_answer())
