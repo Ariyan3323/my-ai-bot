@@ -4,6 +4,7 @@ import base64
 import re
 from datetime import datetime
 from urllib.parse import urlparse
+import requests
 from dotenv import load_dotenv
 from telebot import TeleBot, types
 from google import genai
@@ -30,6 +31,9 @@ from services.self_improve import grok_search, self_upgrade, check_autonomy, upd
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 openai_client = None
 if OPENAI_API_KEY:
     try:
@@ -38,6 +42,31 @@ if OPENAI_API_KEY:
         print("OpenAI client initialized successfully.")
     except Exception as oe:
         print(f"OpenAI initialization error: {oe}")
+
+def call_openrouter_fallback(prompt):
+    """Optional free-model fallback through OpenRouter's free router."""
+    if not OPENROUTER_API_KEY:
+        return None
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "openrouter/free",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1200,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+    except Exception as err:
+        print(f"OpenRouter free fallback error: {err}")
+        return None
 
 def call_openai_fallback(prompt, image_bytes=None):
     """Calls OpenAI as a multi-model fallback or supplementary engine."""
@@ -158,6 +187,15 @@ def generate_with_model_fallback(c=None, contents=None, config=None):
                 break
         else:
             break
+
+    if OPENROUTER_API_KEY and isinstance(contents, str):
+        print("Falling back to OpenRouter free model...")
+        openrouter_resp = call_openrouter_fallback(contents)
+        if openrouter_resp:
+            class DummyResp:
+                text = openrouter_resp
+                function_calls = None
+            return DummyResp()
 
     if openai_client and isinstance(contents, str):
         print("Falling back to OpenAI...")
@@ -304,32 +342,184 @@ def _rank_search_results(results, category, query=""):
         item.pop("_score", None)
     return ranked
 
+def _is_safe_http_url(url):
+    try:
+        p = urlparse(url)
+        return p.scheme in ("http", "https") and bool(p.netloc)
+    except Exception:
+        return False
+
+def _extract_page_date(html):
+    patterns = [
+        r'<meta[^>]+(?:property|name)=["\\\']article:published_time["\\\'][^>]+content=["\\\']([^"\\\']+)',
+        r'<meta[^>]+(?:property|name)=["\\\']datePublished["\\\'][^>]+content=["\\\']([^"\\\']+)',
+        r'<meta[^>]+(?:property|name)=["\\\']pubdate["\\\'][^>]+content=["\\\']([^"\\\']+)',
+        r'"datePublished"\\s*:\\s*"([^"]+)"',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, html, re.I)
+        if m:
+            try:
+                return datetime.fromisoformat(m.group(1).replace("Z", "+00:00"))
+            except Exception:
+                continue
+    return None
+
+def _fetch_and_verify_result(item):
+    """Fetch the real page and reject broken/future evidence."""
+    url = item.get("url", "")
+    if not _is_safe_http_url(url):
+        return None
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; MyAIBot/1.0)"},
+            timeout=8,
+            allow_redirects=True,
+        )
+        if response.status_code >= 400:
+            return None
+        final_url = response.url
+        if not _is_safe_http_url(final_url):
+            return None
+        html = response.text[:1_500_000]
+        page_date = _extract_page_date(html)
+        now = datetime.now().astimezone()
+        if page_date:
+            if page_date.tzinfo is None:
+                page_date = page_date.replace(tzinfo=now.tzinfo)
+            if page_date > now:
+                return None
+        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.I | re.S)
+        page_title = re.sub(r"\\s+", " ", title_match.group(1)).strip() if title_match else item.get("title", "")
+        return {
+            **item,
+            "url": final_url,
+            "title": page_title[:300] or item.get("title", ""),
+            "published_at": page_date.isoformat() if page_date else item.get("published_at"),
+            "verified": True,
+        }
+    except Exception as e:
+        print(f"Page verification failed for {url}: {e}")
+        return None
+
+def _brave_search(query, max_results):
+    if not BRAVE_SEARCH_API_KEY:
+        return []
+    try:
+        r = requests.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": BRAVE_SEARCH_API_KEY,
+            },
+            params={
+                "q": query,
+                "count": max_results,
+                "country": "us",
+                "search_lang": "fa",
+            },
+            timeout=12,
+        )
+        r.raise_for_status()
+        return [
+            {
+                "title": x.get("title", ""),
+                "url": x.get("url", ""),
+                "snippet": x.get("description", ""),
+                "source": _domain(x.get("url", "")),
+            }
+            for x in r.json().get("web", {}).get("results", [])
+        ]
+    except Exception as e:
+        print(f"Brave search failed: {e}")
+        return []
+
+def _tavily_search(query, max_results):
+    if not TAVILY_API_KEY:
+        return []
+    try:
+        r = requests.post(
+            "https://api.tavily.com/search",
+            headers={"Content-Type": "application/json"},
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "search_depth": "basic",
+                "max_results": max_results,
+                "include_answer": False,
+                "include_raw_content": False,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        return [
+            {
+                "title": x.get("title", ""),
+                "url": x.get("url", ""),
+                "snippet": x.get("content", ""),
+                "source": _domain(x.get("url", "")),
+                "published_at": x.get("published_date"),
+            }
+            for x in r.json().get("results", [])
+        ]
+    except Exception as e:
+        print(f"Tavily search failed: {e}")
+        return []
+
 def search_web(query, max_results=5):
-    """Smart multi-query web search with freshness, deduplication and source ranking."""
+    """Multi-engine search + real-page verification. Missing engines are skipped safely."""
     try:
         queries = _build_search_queries(query)
         category = _search_category(query)
         collected = []
 
-        with DDGS() as ddgs:
-            for search_query in queries:
-                try:
-                    # DDGS returns a small ranked set; several focused queries improve recall.
-                    rows = ddgs.text(
-                        search_query,
-                        region="wt-wt",
-                        safesearch="moderate",
-                        timelimit="m" if any(x in query.lower() for x in (
-                            "امروز", "الان", "آخرین", "جدیدترین", "today", "now", "latest"
-                        )) else None,
-                        max_results=max(3, min(int(max_results), 8)),
-                    )
-                    collected.extend(list(rows or []))
-                except Exception as search_error:
-                    print(f"Search query failed: {search_query} -> {search_error}")
+        # Engine 1: DDGS, no API key required.
+        try:
+            with DDGS() as ddgs:
+                for search_query in queries:
+                    try:
+                        rows = ddgs.text(
+                            search_query,
+                            region="wt-wt",
+                            safesearch="moderate",
+                            timelimit="m" if any(x in query.lower() for x in (
+                                "امروز", "الان", "آخرین", "جدیدترین", "today", "now", "latest"
+                            )) else None,
+                            max_results=max(3, min(int(max_results), 8)),
+                        )
+                        collected.extend(list(rows or []))
+                    except Exception as search_error:
+                        print(f"DDGS query failed: {search_query} -> {search_error}")
+        except Exception as e:
+            print(f"DDGS unavailable: {e}")
+
+        # Engine 2: Brave, optional free monthly credits.
+        for search_query in queries[:2]:
+            collected.extend(_brave_search(search_query, max_results))
+
+        # Engine 3: Tavily, optional free monthly credits.
+        for search_query in queries[:2]:
+            collected.extend(_tavily_search(search_query, max_results))
 
         ranked = _rank_search_results(collected, category, query)
-        return ranked[:max(1, min(int(max_results), 8))]
+        verified = []
+        seen_urls = set()
+
+        # Verify more candidates than we finally return because some pages will fail.
+        for item in ranked[:max(8, max_results * 3)]:
+            checked = _fetch_and_verify_result(item)
+            if not checked:
+                continue
+            key = checked["url"].split("#")[0].rstrip("/").lower()
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            verified.append(checked)
+            if len(verified) >= max(1, min(int(max_results), 8)):
+                break
+
+        return verified
     except Exception as e:
         print(f"Web search error: {e}")
         return []
@@ -391,6 +581,9 @@ def build_system_instruction(user_personality):
         "For current, changing, or uncertain facts, use search_web. "
         "When search results are returned, evaluate source quality, dates, and "
         "agreement between sources before answering. Prefer primary/official sources. "
+        "Use ONLY verified sources returned by search_web for web-grounded claims. " 
+        "Never invent, alter, or guess a source title, URL, publication date, quote, statistic, or claim. " 
+        "Never use a future publication date as evidence. If evidence is insufficient or contradictory, say so. " 
         "Do not invent tool results or claim an action was completed unless the "
         "corresponding tool actually completed it. If no tool is relevant, answer "
         "directly in natural, concise, friendly Farsi. Never expose API keys, "
