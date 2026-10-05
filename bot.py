@@ -525,6 +525,73 @@ def search_web(query, max_results=5):
         return []
 
 # ----------------------------------------------------------------------
+# Deterministic web-search routing
+# ----------------------------------------------------------------------
+
+def is_web_search_intent(text):
+    """Detect requests that explicitly need fresh/current web evidence.
+    We route these directly to search_web instead of relying on LLM tool selection,
+    so a model without function-calling support cannot silently say web search is unavailable.
+    """
+    t = (text or "").lower()
+    triggers = (
+        "امروز", "الان", "آخرین", "جدیدترین", "خبر", "اخبار", "به‌روز", "بروز",
+        "جستجو", "جست‌وجو", "سرچ", "منبع", "لینک منبع", "اینترنت", "آنلاین",
+        "today", "now", "latest", "recent", "current", "news", "search", "source", "sources",
+        "verify", "fact check"
+    )
+    return any(x in t for x in triggers)
+
+def build_verified_search_context(query, results):
+    """Turn verified search results into explicit evidence for the answering model."""
+    lines = [
+        "WEB EVIDENCE (verified pages fetched successfully; use only these sources):",
+    ]
+    for i, item in enumerate(results, 1):
+        lines.append(
+            f"[{i}] {item.get('title','')}\\n"
+            f"Source: {item.get('source','')}\\n"
+            f"Published: {item.get('published_at') or 'not stated'}\\n"
+            f"URL: {item.get('url','')}\\n"
+            f"Snippet: {item.get('snippet','')}"
+        )
+    return "\\n\\n".join(lines)
+
+def answer_with_web_evidence(user_prompt, user_id):
+    """Search first, then ask the LLM to synthesize only from returned evidence."""
+    results = search_web(user_prompt, max_results=6)
+    if not results:
+        return (
+            "🔎 جستجوی وب در این لحظه منبع قابل‌تأییدی پیدا نکرد. "
+            "نمی‌خواهم خبر یا لینک ساختگی بدهم؛ اگر خواستی دوباره تلاش می‌کنم."
+        )
+
+    evidence = build_verified_search_context(user_prompt, results)
+    personality = get_personality(user_id)
+    prompt = (
+        f"درخواست کاربر: {user_prompt}\\n\\n"
+        f"{evidence}\\n\\n"
+        "وظیفه: پاسخ فارسی طبیعی و کوتاه بده. فقط از شواهد بالا استفاده کن. "
+        "اگر منابع با هم اختلاف دارند، اختلاف را واضح بگو. برای ادعاهای خبری، "
+        "حداقل دو منبع مستقل را در صورت وجود مقایسه کن. عنوان، تاریخ و URL را تغییر نده. "
+        "در پایان منابع را به‌صورت شماره‌دار با لینک مستقیم بیاور. "
+        f"سبک پاسخ متناسب با شخصیت کاربر: {personality}."
+    )
+    try:
+        response = generate_with_model_fallback(contents=prompt)
+        text = getattr(response, "text", None)
+        if text:
+            return text
+    except Exception as e:
+        print(f"Web evidence synthesis failed: {e}")
+
+    # Never lose the verified evidence if the answering model is unavailable.
+    return "🌐 منابع قابل‌تأیید پیدا شد:\\n\\n" + "\\n\\n".join(
+        f"{i}. {r.get('title','')}\\n{r.get('published_at') or 'تاریخ اعلام نشده'}\\n{r.get('url','')}"
+        for i, r in enumerate(results, 1)
+    )
+
+# ----------------------------------------------------------------------
 # Compatibility / fallback helpers
 # ----------------------------------------------------------------------
 
@@ -578,9 +645,9 @@ def build_system_instruction(user_personality):
         f"Current exact runtime date and time: {current_date_str}. "
         f"The user's personality is analyzed as: '{user_personality}'. "
         "Use the provided tools whenever they are relevant. "
-        "For current, changing, or uncertain facts, use search_web. "
-        "When search results are returned, evaluate source quality, dates, and "
-        "agreement between sources before answering. Prefer primary/official sources. "
+        "Current/web requests are routed through a deterministic web-search layer before synthesis. "
+        "When search evidence is provided, evaluate source quality, dates, and agreement between sources before answering. Prefer primary/official sources. "
+        "Never claim a fixed knowledge year such as 2029; rely on the runtime date and verified evidence instead. "
         "Use ONLY verified sources returned by search_web for web-grounded claims. " 
         "Never invent, alter, or guess a source title, URL, publication date, quote, statistic, or claim. " 
         "Never use a future publication date as evidence. If evidence is insufficient or contradictory, say so. " 
@@ -756,7 +823,11 @@ def handle_all_messages(message):
     try:
         bot.send_chat_action(chat_id, "typing")
         try:
-            response_text = get_gemini_response(message)
+            if is_web_search_intent(text):
+                print(f"[WEB ROUTER] deterministic search for: {text}")
+                response_text = answer_with_web_evidence(text, chat_id)
+            else:
+                response_text = get_gemini_response(message)
         except Exception as api_err:
             print(f"Gemini/tool pipeline error ({api_err}), using fallback...")
             response_text = free_ai_text_fallback(text)
