@@ -1,7 +1,9 @@
 import os
 import json
 import base64
+import re
 from datetime import datetime
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from telebot import TeleBot, types
 from google import genai
@@ -27,7 +29,6 @@ from services.self_improve import grok_search, self_upgrade, check_autonomy, upd
 # ----------------------------------------------------------------------
 load_dotenv()
 
-# --- OpenAI Client & Multi-Engine Integration ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai_client = None
 if OPENAI_API_KEY:
@@ -47,13 +48,10 @@ def call_openai_fallback(prompt, image_bytes=None):
             b64_img = base64.b64encode(image_bytes).decode("utf-8")
             resp = openai_client.chat.completions.create(
                 model="gpt-4o",
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
-                    ]
-                }],
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                ]}],
                 max_tokens=1000
             )
             return resp.choices[0].message.content
@@ -67,7 +65,6 @@ def call_openai_fallback(prompt, image_bytes=None):
         print(f"OpenAI fallback error: {err}")
         return None
 
-# Telegram and Gemini API Keys
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -75,7 +72,7 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
     print("Error: TELEGRAM_TOKEN or GEMINI_API_KEY not found in environment variables.")
 
 bot = TeleBot(TELEGRAM_TOKEN)
-# Gemini API Keys with Automatic Failover / Rotation
+
 raw_keys = os.getenv("GEMINI_API_KEYS", "")
 keys_list = [k.strip() for k in raw_keys.split(",") if k.strip()]
 single_key = os.getenv("GEMINI_API_KEY")
@@ -117,8 +114,8 @@ def call_gemini_with_fallback(func, *args, **kwargs):
     last_error = None
     for _ in range(attempts):
         try:
-            client = get_current_gemini_client()
-            return func(client, *args, **kwargs)
+            current_client = get_current_gemini_client()
+            return func(current_client, *args, **kwargs)
         except Exception as e:
             last_error = e
             err_str = str(e).lower()
@@ -133,7 +130,6 @@ def call_gemini_with_fallback(func, *args, **kwargs):
 FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash-lite"]
 
 def generate_with_model_fallback(c=None, contents=None, config=None):
-    """Tries available Gemini models and rotates keys on quota/auth failures."""
     global client, current_key_index, keys_list
     attempts = max(1, len(keys_list)) if keys_list else 1
     last_err = None
@@ -148,9 +144,7 @@ def generate_with_model_fallback(c=None, contents=None, config=None):
             for m in FALLBACK_MODELS:
                 try:
                     return active_client.models.generate_content(
-                        model=m,
-                        contents=contents,
-                        config=config
+                        model=m, contents=contents, config=config
                     )
                 except Exception as e:
                     last_err = e
@@ -178,7 +172,6 @@ def generate_with_model_fallback(c=None, contents=None, config=None):
         raise last_err
     raise RuntimeError("No AI model available.")
 
-# Map function names to actual functions for execution
 tool_functions = {
     "handle_trader_request": handle_trader_request,
     "handle_legal_request": handle_legal_request,
@@ -200,17 +193,148 @@ tool_functions = {
     "get_premium_features": get_premium_features,
 }
 
-def search_web(query, max_results=3):
-    """Search the web for fresh information when the model needs current facts."""
+# ----------------------------------------------------------------------
+# Smart Web Search
+# ----------------------------------------------------------------------
+
+OFFICIAL_DOMAINS = {
+    "iran": {"irna.ir", "isna.ir", "president.ir", "irna.ir", "dotic.ir", "qavanin.ir"},
+    "law": {"dotic.ir", "qavanin.ir", "rrk.ir", "adliran.ir"},
+    "science": {"nature.com", "science.org", "pubmed.ncbi.nlm.nih.gov", "nih.gov", "arxiv.org"},
+    "tech": {"openai.com", "ai.google.dev", "deepmind.google", "github.com"},
+    "finance": {"cmegroup.com", "sec.gov", "investor.gov", "worldbank.org", "imf.org"},
+}
+
+def _domain(url):
     try:
+        return urlparse(url).netloc.lower().removeprefix("www.")
+    except Exception:
+        return ""
+
+def _search_category(query):
+    q = query.lower()
+    if any(x in q for x in ("قانون", "حقوق", "دادگاه", "ماده ", "وکیل", "قوه قضاییه")):
+        return "law"
+    if any(x in q for x in ("مقاله", "تحقیق", "علمی", "پژوهش", "study", "paper", "research")):
+        return "science"
+    if any(x in q for x in ("سهام", "بورس", "طلا", "دلار", "ارز", "بیت کوین", "کریپتو", "bitcoin", "stock")):
+        return "finance"
+    if any(x in q for x in ("ایران", "ایرانی", "تهران", "مجلس", "دولت")):
+        return "iran"
+    if any(x in q for x in ("openai", "gemini", "هوش مصنوعی", "ai", "github")):
+        return "tech"
+    return "general"
+
+def _build_search_queries(query):
+    q = re.sub(r"\s+", " ", (query or "").strip())
+    if not q:
+        return []
+    queries = [q]
+    category = _search_category(q)
+
+    # Add a freshness-focused query for explicitly time-sensitive requests.
+    if any(x in q.lower() for x in (
+        "امروز", "الان", "فعلی", "آخرین", "جدیدترین", "همین الان",
+        "today", "now", "latest", "current", "recent"
+    )):
+        queries.append(f"{q} latest news")
+    else:
+        queries.append(f"{q} official source")
+
+    # Add a category-specific query to improve source diversity.
+    if category == "law":
+        queries.append(f"{q} سایت رسمی قانون ایران")
+    elif category == "science":
+        queries.append(f"{q} scientific paper")
+    elif category == "iran":
+        queries.append(f"{q} خبرگزاری معتبر ایران")
+    elif category == "tech":
+        queries.append(f"{q} official documentation")
+    elif category == "finance":
+        queries.append(f"{q} official market data")
+
+    return list(dict.fromkeys(queries))
+
+def _rank_search_results(results, category):
+    preferred = OFFICIAL_DOMAINS.get(category, set())
+    seen = set()
+    ranked = []
+
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("href") or item.get("url") or ""
+        title = (item.get("title") or "").strip()
+        body = (item.get("body") or item.get("snippet") or "").strip()
+        if not title or not url:
+            continue
+
+        key = url.split("#")[0].rstrip("/").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        domain = _domain(url)
+        score = 0
+        if domain in preferred:
+            score += 100
+        elif any(domain.endswith("." + d) for d in preferred):
+            score += 80
+
+        # Prefer pages whose title/snippet matches the query vocabulary.
+        haystack = f"{title} {body}".lower()
+        for token in re.findall(r"[\w\u0600-\u06ff]{4,}", category):
+            if token in haystack:
+                score += 1
+
+        # Penalize obvious low-value pages.
+        if any(x in domain for x in ("pinterest.", "facebook.", "instagram.", "tiktok.")):
+            score -= 30
+
+        ranked.append({
+            "title": title,
+            "url": url,
+            "snippet": body[:700],
+            "source": domain,
+            "_score": score,
+        })
+
+    ranked.sort(key=lambda x: x["_score"], reverse=True)
+    for item in ranked:
+        item.pop("_score", None)
+    return ranked
+
+def search_web(query, max_results=5):
+    """Smart multi-query web search with freshness, deduplication and source ranking."""
+    try:
+        queries = _build_search_queries(query)
+        category = _search_category(query)
+        collected = []
+
         with DDGS() as ddgs:
-            return list(ddgs.text(query, max_results=max_results))
+            for search_query in queries:
+                try:
+                    # DDGS returns a small ranked set; several focused queries improve recall.
+                    rows = ddgs.text(
+                        search_query,
+                        region="wt-wt",
+                        safesearch="moderate",
+                        timelimit="m" if any(x in query.lower() for x in (
+                            "امروز", "الان", "آخرین", "جدیدترین", "today", "now", "latest"
+                        )) else None,
+                        max_results=max(3, min(int(max_results), 8)),
+                    )
+                    collected.extend(list(rows or []))
+                except Exception as search_error:
+                    print(f"Search query failed: {search_query} -> {search_error}")
+
+        ranked = _rank_search_results(collected, category)
+        return ranked[:max(1, min(int(max_results), 8))]
     except Exception as e:
         print(f"Web search error: {e}")
         return []
 
 def build_system_instruction(user_personality):
-    """Build fresh agent context for every request, including current runtime time."""
     now = datetime.now().astimezone()
     current_date_str = now.strftime("%Y-%m-%d %H:%M:%S %z (%A)")
     return (
@@ -219,8 +343,10 @@ def build_system_instruction(user_personality):
         "and practical assistance. Your primary language is Farsi (Persian). "
         f"Current exact runtime date and time: {current_date_str}. "
         f"The user's personality is analyzed as: '{user_personality}'. "
-        "Use the provided tools whenever they are relevant to the request. "
-        "For current, changing, or uncertain facts, use search_web when available. "
+        "Use the provided tools whenever they are relevant. "
+        "For current, changing, or uncertain facts, use search_web. "
+        "When search results are returned, evaluate source quality, dates, and "
+        "agreement between sources before answering. Prefer primary/official sources. "
         "Do not invent tool results or claim an action was completed unless the "
         "corresponding tool actually completed it. If no tool is relevant, answer "
         "directly in natural, concise, friendly Farsi. Never expose API keys, "
@@ -228,11 +354,10 @@ def build_system_instruction(user_personality):
     )
 
 # ----------------------------------------------------------------------
-# 2. Core Agent Logic (Function Calling)
+# Core Agent Logic
 # ----------------------------------------------------------------------
 
 def get_gemini_response(message):
-    """Generate a Gemini response with real tool calling and fresh runtime context."""
     user_id = message.from_user.id
     user_prompt = (message.text or "").strip()
 
@@ -303,7 +428,6 @@ def get_gemini_response(message):
 
 @bot.message_handler(func=lambda message: True)
 def check_voice_intent(text: str) -> bool:
-    """Checks if the user explicitly asked for a voice message."""
     if not text:
         return False
     t = text.strip().lower()
@@ -416,7 +540,7 @@ def handle_all_messages(message):
         print(f"Message pipeline error: {e}")
         bot.reply_to(message, "❌ خطایی در پردازش پیام رخ داد. لطفاً دوباره تلاش کن.")
 
-@bot.message_handler(commands=['power_up'])
+@bot.message_handler(commands=["power_up"])
 def power_up_test(message):
     if not is_mohammad(message):
         return
@@ -429,7 +553,7 @@ def power_up_test(message):
     )
     bot.send_message(message.chat.id, final_msg, parse_mode="Markdown")
 
-@bot.message_handler(commands=['find_job'])
+@bot.message_handler(commands=["find_job"])
 def job_hunter(message):
     if not is_mohammad(message):
         return
@@ -458,11 +582,8 @@ def handle_salary(call):
     bot.answer_callback_query(call.id, "در حال انتقال درآمدها به حساب پادشاه...")
     bot.send_message(call.message.chat.id, "💵 محمد جان، حقوق این ماه من از ادمینی ۳ کانال، به حساب تتر شما واریز شد!")
 
-# --- Group & Channel Evolution Handlers ---
-
 @bot.my_chat_member_handler()
 def handle_bot_membership_change(update):
-    """Automatically introduces and configures itself when added to a group or channel."""
     chat = update.chat
     new_status = update.new_chat_member.status
     if new_status in ["member", "administrator"]:
@@ -483,7 +604,6 @@ def handle_bot_membership_change(update):
 
 @bot.message_handler(content_types=["new_chat_members"])
 def welcome_new_members(message):
-    """Greets new members entering the group."""
     for new_member in message.new_chat_members:
         if new_member.id != bot.get_me().id:
             first_name = new_member.first_name or "دوست عزیز"
@@ -491,7 +611,6 @@ def welcome_new_members(message):
 
 @bot.message_handler(commands=["gpt", "openai"])
 def handle_gpt_command(message):
-    """Direct query to OpenAI."""
     prompt = message.text.partition(" ")[2].strip()
     if not prompt:
         bot.reply_to(message, "لطفاً سؤال یا درخواست خود را بعد از دستور /gpt بنویسید.")
