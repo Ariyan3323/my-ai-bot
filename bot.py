@@ -255,7 +255,8 @@ def _build_search_queries(query):
 
     return list(dict.fromkeys(queries))
 
-def _rank_search_results(results, category):
+def _rank_search_results(results, category, query=""):
+
     preferred = OFFICIAL_DOMAINS.get(category, set())
     seen = set()
     ranked = []
@@ -281,11 +282,10 @@ def _rank_search_results(results, category):
         elif any(domain.endswith("." + d) for d in preferred):
             score += 80
 
-        # Prefer pages whose title/snippet matches the query vocabulary.
+        # Prefer pages whose title/snippet actually matches the user's query.
         haystack = f"{title} {body}".lower()
-        for token in re.findall(r"[\w\u0600-\u06ff]{4,}", category):
-            if token in haystack:
-                score += 1
+        query_tokens = re.findall(r"[\w\u0600-\u06ff]{3,}", (query or "").lower())
+        score += min(sum(1 for token in set(query_tokens) if token in haystack), 12) * 3
 
         # Penalize obvious low-value pages.
         if any(x in domain for x in ("pinterest.", "facebook.", "instagram.", "tiktok.")):
@@ -328,11 +328,55 @@ def search_web(query, max_results=5):
                 except Exception as search_error:
                     print(f"Search query failed: {search_query} -> {search_error}")
 
-        ranked = _rank_search_results(collected, category)
+        ranked = _rank_search_results(collected, category, query)
         return ranked[:max(1, min(int(max_results), 8))]
     except Exception as e:
         print(f"Web search error: {e}")
         return []
+
+# ----------------------------------------------------------------------
+# Compatibility / fallback helpers
+# ----------------------------------------------------------------------
+
+def check_image_intent(text):
+    """Return an image prompt when the user explicitly asks to create an image."""
+    if not text:
+        return None
+    t = text.strip()
+    triggers = ("بساز تصویر", "تصویر بساز", "عکس بساز", "عکس ایجاد کن", "تصویر ایجاد کن",
+                "/draw", "/image", "generate an image", "create an image")
+    if any(x in t.lower() for x in triggers):
+        for x in ("/draw", "/image", "تصویر بساز", "عکس بساز", "تصویر ایجاد کن", "عکس ایجاد کن"):
+            t = t.replace(x, "").strip()
+        return t or "یک تصویر زیبا و خلاقانه"
+    return None
+
+def translate_prompt_to_english(prompt):
+    """Keep image generation dependency-free; Gemini can translate when available."""
+    if not prompt:
+        return ""
+    try:
+        result = generate_with_model_fallback(
+            contents=f"Translate this image prompt to concise English. Return only the prompt: {prompt}"
+        )
+        translated = getattr(result, "text", None)
+        return translated.strip() if translated else prompt
+    except Exception:
+        return prompt
+
+def free_ai_text_fallback(prompt):
+    """Last-resort text response using OpenAI if configured; never fabricates success."""
+    return call_openai_fallback(prompt)
+
+def free_online_search(query):
+    """Human-readable fallback built only from search results returned by DDGS."""
+    rows = search_web(query, max_results=5)
+    if not rows:
+        return None
+    return "\n\n".join(
+        f"• {r.get('title','بدون عنوان')}\n  {r.get('snippet','')}\n  منبع: {r.get('source','unknown')}\n  {r.get('url','')}"
+        for r in rows
+    )
 
 def build_system_instruction(user_personality):
     now = datetime.now().astimezone()
@@ -426,7 +470,6 @@ def get_gemini_response(message):
 
     raise RuntimeError("Maximum tool-call rounds exceeded.")
 
-@bot.message_handler(func=lambda message: True)
 def check_voice_intent(text: str) -> bool:
     if not text:
         return False
@@ -438,6 +481,7 @@ def check_voice_intent(text: str) -> bool:
     ]
     return any(k in t for k in keywords)
 
+@bot.message_handler(content_types=["text"])
 def handle_all_messages(message):
     chat_id = message.chat.id
     if is_mohammad(message):
