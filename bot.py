@@ -647,26 +647,57 @@ def handle_generate_image_command(message):
     except Exception as e:
         bot.send_message(chat_id, f"❌ خطا در ساخت تصویر: {e}")
 
-@bot.message_handler(content_types=['photo'])
+@bot.message_handler(content_types=['photo', 'document'])
 def handle_incoming_photo(message):
     chat_id = message.chat.id
     if not is_verified(chat_id):
         bot.send_message(chat_id, "⛔ دسترسی محدود است. لطفاً با /start احراز هویت کنید.")
         return
 
-    status_msg = bot.reply_to(message, "👁️ در حال نگاه کردن به عکس و تحلیل آن با هوش مصنوعی...")
+    # Check if document is an image
+    file_id = None
+    mime_type = "image/jpeg"
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document:
+        doc = message.document
+        fn = (doc.file_name or "").lower()
+        if doc.mime_type and doc.mime_type.startswith("image/"):
+            file_id = doc.file_id
+            mime_type = doc.mime_type
+        elif any(fn.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]):
+            file_id = doc.file_id
+            mime_type = "image/png" if fn.endswith(".png") else "image/jpeg"
+        else:
+            return  # Not an image document
+
+    status_msg = bot.reply_to(message, "👁️ در حال اسکن دقیق و تحلیل موشکافانه تصویر...")
     try:
-        photo_info = bot.get_file(message.photo[-1].file_id)
+        photo_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(photo_info.file_path)
 
-        user_caption = message.caption.strip() if message.caption else "این تصویر را با جزئیات کامل به زبان فارسی تحلیل و بررسی کن."
+        user_caption = message.caption.strip() if message.caption else ""
+        
+        # Deep vision prompt ensuring high accuracy, OCR, chart analysis & clear structure
+        vision_prompt = (
+            "تو یک تحلیل‌گر و بیننده فوق‌العاده دقیق و هوشمند هستی. این تصویر را با دقت میکروسکوپی بررسی کن.\n"
+            "دستورالعمل‌ها:\n"
+            "۱. اگر در تصویر متن (فارسی یا انگلیسی)، ارقام، نمودار، لاگ خطا یا کد برنامه وجود دارد، دقیقاً آن را بخوان و بازگو کن.\n"
+            "۲. اگر چارت یا نمودار مالی و ترید است، روند بازار، سطوح کلیدی حمایت/مقاومت، الگوها و کندل‌ها را تحلیل حرفه‌ای کن.\n"
+            "۳. موضوع اصلی، جزییات پنهان، زمینه و پیام تصویر را به زبان فارسی بسیار روان، غنی و دسته‌بندی‌شده توضیح بده.\n"
+        )
+        if user_caption:
+            vision_prompt += f"\nسوال یا درخواست اختصاصی کاربر درباره تصویر: {user_caption}"
+        else:
+            vision_prompt += "\nتحلیل جامع، نکات کلیدی و نتیجه‌گیری نهایی را به صورت تمیز و ساختاریافته ارائه بده."
+
         reply_text = None
 
-        # 1. Try Gemini
+        # 1. Try Gemini with multimodal input
         gemini_error = None
         try:
-            image_part = gemini_types.Part.from_bytes(data=downloaded_file, mime_type="image/jpeg")
-            resp = generate_with_model_fallback(contents=[image_part, user_caption])
+            image_part = gemini_types.Part.from_bytes(data=downloaded_file, mime_type=mime_type)
+            resp = generate_with_model_fallback(contents=[image_part, vision_prompt])
             if resp and hasattr(resp, 'text') and resp.text:
                 reply_text = resp.text
         except Exception as ge:
@@ -684,12 +715,12 @@ def handle_incoming_photo(message):
                         {
                             "role": "user",
                             "content": [
-                                {"type": "text", "text": user_caption},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                                {"type": "text", "text": vision_prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}}
                             ]
                         }
                     ],
-                    max_tokens=600
+                    max_tokens=1500
                 )
                 reply_text = v_resp.choices[0].message.content
             except Exception as oe:
