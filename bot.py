@@ -130,7 +130,7 @@ def call_gemini_with_fallback(func, *args, **kwargs):
                 break
     raise last_error
 
-FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-flash-latest", "gemini-2.0-flash-exp", "gemini-2.5-flash"]
+FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-flash-latest", "gemini-1.5-flash"]
 model_name = FALLBACK_MODELS[0]
 
 def generate_with_model_fallback(c=None, contents=None, config=None):
@@ -648,18 +648,22 @@ def check_image_intent(msg_text: str):
         return None
     import re
     t = msg_text.strip()
-    kws = ["بکش", "نقاشی", "طراحی", "تصویر", "عکس", "draw", "paint", "image", "photo", "pic"]
-    # Skip if asking about an already sent photo
-    if any(neg in t for neg in ["این عکس", "تحلیل عکس", "این تصویر", "این چیه"]):
+    
+    # Never trigger image generation for questions, complaints, or errors
+    negative_words = ["چرا", "چطور", "چگونه", "خراب", "اشتباه", "خطا", "ارور", "نمیسازه", "کم میاره", "تحلیل", "این عکس", "این تصویر", "این چیه", "؟", "?"]
+    if any(nw in t.lower() for nw in negative_words):
         return None
-    for k in kws:
-        if k in t.lower():
-            p = t
-            for w in ["لطفا", "لطفاً", "برام", "واسم", "میشه", "یه", "یک", "بکشی", "بکش", "نقاشی کن", "نقاشی", "طراحی کن", "طراحی", "تصویر بساز", "تصویر یک", "عکس بساز", "عکس یک", "عکس", "بده", "کن"]:
-                p = re.sub(r'\b' + re.escape(w) + r'\b', '', p)
-            p = p.strip()
-            return p if len(p) > 1 else t
-    return None
+        
+    explicit_draw_verbs = ["بکش", "نقاشی کن", "طراحی کن", "تصویر بساز", "عکس بساز", "خلق کن", "draw", "paint", "generate image"]
+    # Require explicit draw intent
+    if not any(v in t.lower() for v in explicit_draw_verbs):
+        return None
+
+    p = t
+    for w in ["لطفا", "لطفاً", "برام", "واسم", "میشه", "یه", "یک", "بکشی", "بکش", "نقاشی کن", "نقاشی", "طراحی کن", "طراحی", "تصویر بساز", "تصویر یک", "عکس بساز", "عکس یک", "عکس", "بده", "کن"]:
+        p = re.sub(r'\b' + re.escape(w) + r'\b', '', p)
+    p = p.strip()
+    return p if len(p) > 1 else t
 
 def free_online_search(query: str) -> str:
     """Fetches free online knowledge from DuckDuckGo when keys fail or for live info."""
