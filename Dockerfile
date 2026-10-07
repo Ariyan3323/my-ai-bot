@@ -2,15 +2,20 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends     ffmpeg     curl     git     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Hugging Face Spaces port
+ENV PYTHONUNBUFFERED=1
+ENV SAM_DOCKER_ENTRYPOINT=app.py
+
 EXPOSE 7860
 
-CMD ["python", "app.py"]
+CMD ["python", "-u", "app.py"]
