@@ -1,32 +1,57 @@
 import os
 import threading
 import time
-import subprocess
 import gradio as gr
 
-def run_telegram_bot():
-    """Runs the Telegram bot in background."""
-    time.sleep(2)
-    print("Starting Telegram Bot via run_polling.py...")
-    try:
-        subprocess.run(["python", "run_polling.py"])
-    except Exception as e:
-        print(f"Error running bot: {e}")
+BOT_VERSION = os.environ.get("SAM_BUILD", "2026-10-07-bugfix-2")
+_bot_state = {
+    "running": False,
+    "last_error": "",
+    "restarts": 0,
+}
 
-# Start the Telegram bot in background thread
-threading.Thread(target=run_telegram_bot, daemon=True).start()
+def run_telegram_bot():
+    """Run Telegram polling in a supervised thread and restart after crashes."""
+    while True:
+        try:
+            from bot import bot, BOT_VERSION as CODE_BUILD
+            _bot_state["running"] = False
+            _bot_state["last_error"] = ""
+            print(f"[SAM] Telegram supervisor starting. Build={CODE_BUILD}", flush=True)
+
+            # Long polling and webhook mode are mutually exclusive.
+            bot.remove_webhook()
+            _bot_state["running"] = True
+            bot.infinity_polling(
+                timeout=30,
+                long_polling_timeout=30,
+                skip_pending=False,
+                allowed_updates=["message", "callback_query"]
+            )
+            print("[SAM] Telegram polling stopped unexpectedly; restarting...", flush=True)
+
+        except Exception as e:
+            _bot_state["running"] = False
+            _bot_state["last_error"] = repr(e)
+            _bot_state["restarts"] += 1
+            print(f"[SAM] Telegram polling crashed: {e!r}", flush=True)
+
+        time.sleep(3)
+
+threading.Thread(target=run_telegram_bot, daemon=True, name="telegram-supervisor").start()
 
 def get_bot_status():
-    token = os.environ.get("TELEGRAM_TOKEN")
-    if token:
-        masked = token[:6] + "..." + token[-4:]
-        return f"🟢 سرور ابری فعال است | ربات تلگرام با توکن ({masked}) متصل شد."
-    return "🟡 سرور فعال است اما متغیر TELEGRAM_TOKEN در بخش Settings > Variables تنظیم نشده است."
+    return (
+        f"🟢 SAM Space is running\n"
+        f"🧩 Build: {BOT_VERSION}\n"
+        f"🤖 Telegram worker: {'RUNNING' if _bot_state['running'] else 'RESTARTING/STOPPED'}\n"
+        f"🔁 Worker restarts: {_bot_state['restarts']}\n"
+        f"⚠️ Last error: {_bot_state['last_error'] or 'none'}"
+    )
 
-with gr.Blocks(title="Sam AI Bot") as demo:
-    gr.Markdown("# 🤖 سرور ابری ۲۴ ساعته ربات هوش مصنوعی Sam")
-    gr.Markdown("این سرور در هاگینگ‌فیس به صورت رایگان و پیوسته فعال است و پیام‌های تلگرام را در لحظه دریافت و پاسخ می‌دهد.")
-    status_text = gr.Textbox(value=get_bot_status(), label="وضعیت ربات", interactive=False)
+with gr.Blocks(title="SAM AI Bot") as demo:
+    gr.Markdown("# 🤖 SAM AI Bot")
+    status_text = gr.Textbox(value=get_bot_status(), label="وضعیت زنده ربات", interactive=False)
     refresh_btn = gr.Button("🔄 بروزرسانی وضعیت")
     refresh_btn.click(fn=get_bot_status, outputs=status_text)
 
