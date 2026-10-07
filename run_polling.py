@@ -1,19 +1,21 @@
-"""
-Entry point for running the bot with long-polling instead of a webhook.
-
-Use this when there is no public HTTPS URL for Telegram to send updates to
-(e.g. running on a phone via Termux, or on a local machine). This does NOT
-require WEBHOOK_URL to be set - only TELEGRAM_TOKEN and GEMINI_API_KEY.
-
-Run with:
-    python run_polling.py
-"""
-import os
-from bot import bot, BOT_VERSION  # importing bot.py registers all @bot.message_handler routes
+"""Standalone/local Telegram polling entrypoint with automatic restart."""
+import time
+import traceback
+from bot import bot, BOT_VERSION
 
 if __name__ == "__main__":
-    # Make sure no webhook is set, otherwise Telegram will refuse to let
-    # this process poll for updates (409 Conflict).
-    bot.remove_webhook()
-    print(f"Sam is running in polling mode. Build: {BOT_VERSION}")
-    bot.infinity_polling(timeout=30, long_polling_timeout=30)
+    print("=" * 72, flush=True)
+    print(f"[SAM-LEGACY-BOOT] ENTRYPOINT=run_polling.py | BOT_BUILD={BOT_VERSION}", flush=True)
+    while True:
+        try:
+            me = bot.get_me()
+            print(f"[SAM-LEGACY-BOOT] Telegram auth OK: @{getattr(me, 'username', '')}", flush=True)
+            print("[SAM-LEGACY-BOOT] Removing webhook...", flush=True)
+            bot.remove_webhook()
+            print("[SAM-LEGACY-BOOT] POLLING_STARTED", flush=True)
+            bot.infinity_polling(timeout=30, long_polling_timeout=30, skip_pending=False, allowed_updates=["message", "callback_query", "my_chat_member"])
+            print("[SAM-LEGACY-BOOT] POLLING_RETURNED; restarting...", flush=True)
+        except Exception as exc:
+            print(f"[SAM-LEGACY-BOOT] POLLING_CRASH: {type(exc).__name__}: {exc}", flush=True)
+            traceback.print_exc()
+        time.sleep(3)
