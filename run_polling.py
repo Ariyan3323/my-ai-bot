@@ -9,11 +9,11 @@ Run with:
     python run_polling.py
 """
 import os
-from bot import bot  # importing bot.py registers all @bot.message_handler routes
+from bot import bot, BOT_VERSION  # importing bot.py registers all @bot.message_handler routes
 
 if __name__ == "__main__":
     # Make sure no webhook is set, otherwise Telegram will refuse to let
     # this process poll for updates (409 Conflict).
     bot.remove_webhook()
-    print("Sam is running in polling mode. Press Ctrl+C to stop.")
+    print(f"Sam is running in polling mode. Build: {BOT_VERSION}")
     bot.infinity_polling(timeout=30, long_polling_timeout=30)
