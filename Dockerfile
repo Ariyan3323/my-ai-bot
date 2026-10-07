@@ -13,4 +13,4 @@ COPY . .
 # Hugging Face Spaces port
 EXPOSE 7860
 
-CMD ["python", "run_polling.py"]
+CMD ["python", "app.py"]
