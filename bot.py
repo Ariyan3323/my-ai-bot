@@ -1,5 +1,7 @@
 import os
 import json
+import threading
+import tempfile
 import base64
 import re
 import ipaddress
@@ -14,6 +16,7 @@ from google import genai
 from google.genai import types as gemini_types
 from google.genai.errors import APIError
 from ddgs import DDGS
+import speech_recognition as sr
 
 # Import Service Modules
 from services.ethics import is_ethical_request, get_ethics_rejection_message
@@ -103,7 +106,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
     print("Error: TELEGRAM_TOKEN or GEMINI_API_KEY not found in environment variables.")
 
-bot = TeleBot(TELEGRAM_TOKEN)
+BOT_VERSION = "2026-10-07-bugfix-1"
+PROCESSING_TIMEOUT_SECONDS = 25
+bot = TeleBot(TELEGRAM_TOKEN, threaded=True, num_threads=8)
 
 raw_keys = os.getenv("GEMINI_API_KEYS", "")
 keys_list = [k.strip() for k in raw_keys.split(",") if k.strip()]
@@ -372,6 +377,33 @@ def current_time_answer():
         f"🗓️ شمسی: {format_persian_date(now)}\n"
         f"🌍 منطقه زمانی: Asia/Tehran"
     )
+
+
+def start_processing_guard(chat_id, label="پردازش"):
+    """Send a deterministic timeout notice if a slow external operation stalls."""
+    state = {"timed_out": False}
+
+    def on_timeout():
+        state["timed_out"] = True
+        try:
+            bot.send_message(
+                chat_id,
+                f"⚠️ {label} بیش از {PROCESSING_TIMEOUT_SECONDS} ثانیه طول کشید و متوقف شد. "
+                "سرویس خارجی پاسخ نداد؛ لطفاً دوباره تلاش کن."
+            )
+        except Exception as e:
+            print(f"Timeout notice failed: {e}")
+
+    timer = threading.Timer(PROCESSING_TIMEOUT_SECONDS, on_timeout)
+    timer.daemon = True
+    timer.start()
+    return timer, state
+
+def cancel_processing_guard(timer):
+    try:
+        timer.cancel()
+    except Exception:
+        pass
 
 def clean_model_output(text):
     """Remove third-party ads/boilerplate that must never reach the user."""
@@ -832,6 +864,110 @@ def check_voice_intent(text: str) -> bool:
     ]
     return any(k in t for k in keywords)
 
+
+def build_memory_report(user_id):
+    """Return only memory actually stored for this Telegram user."""
+    history = get_history(user_id)
+    personality = get_personality(user_id)
+    if not history and (not personality or personality == "نامشخص"):
+        return "🧠 حافظه شخصی برای این کاربر هنوز اطلاعاتی ثبت نکرده است."
+    lines = ["🧠 اطلاعات ذخیره‌شده برای این کاربر:"]
+    if personality and personality != "نامشخص":
+        lines.append(f"👤 شخصیت ثبت‌شده: {personality}")
+    if history:
+        lines.append("\n💬 آخرین سوابق مکالمه:")
+        lines.append(history)
+    return "\n".join(lines)
+
+def is_memory_request(text):
+    t = re.sub(r"\s+", " ", (text or "").strip().lower())
+    triggers = (
+        "/memory", "/حافظه", "حافظه من", "حافظه‌ام", "چی از من یادت مونده",
+        "چه اطلاعاتی از من داری", "اطلاعات ذخیره شده درباره من",
+        "اطلاعات ذخیره‌شده درباره من", "چی درباره من ذخیره کردی",
+        "چه چیزهایی از من ذخیره شده", "what do you remember about me",
+    )
+    return any(t == x or x in t for x in triggers)
+
+@bot.message_handler(content_types=["voice", "audio"])
+def handle_voice_message(message):
+    chat_id = message.chat.id
+    if not is_verified(chat_id):
+        bot.send_message(chat_id, "❌ دسترسی محدود شده است. لطفاً با /start احراز هویت کنید.")
+        return
+
+    status = bot.reply_to(message, "🎙️ در حال گوش دادن و تبدیل صدای شما به متن...")
+    timer, state = start_processing_guard(chat_id, "پردازش صوت")
+    temp_paths = []
+    try:
+        file_id = message.voice.file_id if getattr(message, "voice", None) else message.audio.file_id
+        file_info = bot.get_file(file_id)
+        audio_bytes = bot.download_file(file_info.file_path)
+
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as src:
+            src.write(audio_bytes)
+            src_path = src.name
+        temp_paths.append(src_path)
+
+        from pydub import AudioSegment
+        audio = AudioSegment.from_file(src_path)
+        wav_path = src_path + ".wav"
+        audio.export(wav_path, format="wav")
+        temp_paths.append(wav_path)
+
+        recognizer = sr.Recognizer()
+        recognizer.operation_timeout = 12
+        with sr.AudioFile(wav_path) as source:
+            recorded = recognizer.record(source)
+        transcript = recognizer.recognize_google(recorded, language="fa-IR").strip()
+
+        if not transcript:
+            raise ValueError("empty_transcript")
+        if state["timed_out"]:
+            return
+
+        bot.send_message(chat_id, f"📝 متن صدا: {transcript}")
+
+        try:
+            response = generate_with_model_fallback(contents=transcript)
+            response_text = clean_model_output(getattr(response, "text", response) or "")
+        except Exception as api_err:
+            print(f"Voice AI error: {api_err}")
+            response_text = clean_model_output(free_ai_text_fallback(transcript) or "")
+
+        if state["timed_out"]:
+            return
+        if not response_text:
+            raise RuntimeError("empty_voice_answer")
+
+        bot.send_message(chat_id, response_text)
+        try:
+            add_to_memory(message.from_user.id, "user", transcript)
+            add_to_memory(message.from_user.id, "assistant", response_text)
+        except Exception as memory_err:
+            print(f"Voice memory save skipped: {memory_err}")
+
+    except sr.UnknownValueError:
+        bot.send_message(chat_id, "❌ صدای شما واضح تشخیص داده نشد. لطفاً دوباره با صدای واضح‌تر بفرست.")
+    except sr.RequestError as e:
+        print(f"Speech recognition request error: {e}")
+        bot.send_message(chat_id, "❌ سرویس تبدیل صدا در دسترس نبود. لطفاً چند لحظه بعد دوباره تلاش کن.")
+    except Exception as e:
+        print(f"Voice message pipeline error: {e}")
+        if not state["timed_out"]:
+            bot.send_message(chat_id, "❌ پردازش صوت ناموفق بود. لطفاً دوباره تلاش کن.")
+    finally:
+        cancel_processing_guard(timer)
+        for path in temp_paths:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        try:
+            bot.delete_message(chat_id, status.message_id)
+        except Exception:
+            pass
+
 @bot.message_handler(content_types=["text"])
 def handle_all_messages(message):
     chat_id = message.chat.id
@@ -851,7 +987,7 @@ def handle_all_messages(message):
 
     # HARD GATE: exact time/date questions are answered locally and MUST NOT
     # reach Gemini/OpenAI, even if another intent detector also matches.
-    normalized_text = re.sub(r"[؟?!،,:;]+$", "", re.sub(r"\\s+", " ", text.strip().lower()))
+    normalized_text = re.sub(r"[؟?!،,:;]+$", "", re.sub(r"\s+", " ", text.strip().lower()))
     if normalized_text in (
         "الان ساعت چنده", "الآن ساعت چنده", "همین الان ساعت چنده",
         "ساعت چنده", "ساعت چند", "الان ساعت چند", "الآن ساعت چند",
@@ -873,6 +1009,7 @@ def handle_all_messages(message):
     if text.strip().lower() == "/status":
         status = (
             "🩺 وضعیت SAM Bot\n"
+            f"🧩 Build: {BOT_VERSION}\n"
             f"🤖 Gemini keys: {len(keys_list)}\n"
             f"🌐 OpenRouter: {'ON' if OPENROUTER_API_KEY else 'OFF'}\n"
             f"🔎 Brave: {'ON' if BRAVE_SEARCH_API_KEY else 'OFF'}\n"
@@ -884,9 +1021,14 @@ def handle_all_messages(message):
         bot.reply_to(message, status)
         return
 
+    if is_memory_request(text):
+        bot.reply_to(message, build_memory_report(message.from_user.id))
+        return
+
     img_prompt = check_image_intent(text)
     if img_prompt and len(img_prompt) > 2:
         status_msg = bot.reply_to(message, f"🎨 در حال خلق تصویر برای: *{img_prompt}*...", parse_mode="Markdown")
+        timer, state = start_processing_guard(chat_id, "ساخت تصویر")
         try:
             import urllib.parse, urllib.request
             en_prompt = translate_prompt_to_english(img_prompt)
@@ -901,15 +1043,21 @@ def handle_all_messages(message):
                 bot.delete_message(chat_id, status_msg.message_id)
             except Exception:
                 pass
+            if state["timed_out"]:
+                return
             return
         except Exception as e:
             print(f"Image generation error: {e}")
-            bot.send_message(chat_id, "❌ ساخت تصویر فعلاً با خطا مواجه شد. لطفاً دوباره تلاش کن.")
+            if not state["timed_out"]:
+                bot.send_message(chat_id, "❌ ساخت تصویر فعلاً با خطا مواجه شد. لطفاً دوباره تلاش کن.")
             return
+        finally:
+            cancel_processing_guard(timer)
 
     if check_voice_intent(text):
         bot.send_chat_action(chat_id, "record_voice")
         status_msg = bot.reply_to(message, "🎙️ در حال آماده‌سازی پاسخ صوتی...")
+        timer, state = start_processing_guard(chat_id, "پاسخ صوتی")
 
         ai_prompt = text
         for kw in ["ویس بده", "ویس بفرست", "صوتی بگو", "با صدا بگو", "با ویس بگو", "بصورت صوتی", "صوتی جواب بده"]:
@@ -931,7 +1079,14 @@ def handle_all_messages(message):
         if not answer:
             answer = "سلام دوست من! در حال حاضر سیستم صوتی آماده است، بفرما در خدمتم."
 
-        voice_path = text_to_voice(answer, chat_id)
+        try:
+            voice_path = text_to_voice(answer, chat_id)
+        except Exception as tts_error:
+            print(f"TTS error: {tts_error}")
+            voice_path = None
+        if state["timed_out"]:
+            cancel_processing_guard(timer)
+            return
         if voice_path and os.path.exists(voice_path):
             try:
                 with open(voice_path, "rb") as audio:
@@ -940,13 +1095,18 @@ def handle_all_messages(message):
                     bot.delete_message(chat_id, status_msg.message_id)
                 except Exception:
                     pass
+                cancel_processing_guard(timer)
                 return
             except Exception as e:
                 print(f"Error sending voice: {e}")
 
-        bot.send_message(chat_id, answer)
+        if not state["timed_out"]:
+            bot.send_message(chat_id, answer)
+        cancel_processing_guard(timer)
         return
 
+    status_msg = bot.reply_to(message, "⏳ پیام دریافت شد؛ دارم بررسی می‌کنم...")
+    timer, state = start_processing_guard(chat_id, "پاسخ")
     try:
         bot.send_chat_action(chat_id, "typing")
         try:
@@ -971,6 +1131,8 @@ def handle_all_messages(message):
                     print(f"Fallback online search error: {search_err}")
 
         response_text = clean_model_output(response_text)
+        if state["timed_out"]:
+            return
         if response_text:
             bot.send_message(chat_id, response_text)
             try:
@@ -979,10 +1141,18 @@ def handle_all_messages(message):
             except Exception as memory_err:
                 print(f"Memory save skipped: {memory_err}")
         else:
-            bot.reply_to(message, "⚠️ فعلاً سرویس هوش مصنوعی در دسترس نیست. لطفاً چند لحظه بعد دوباره تلاش کن.")
+            if not state["timed_out"]:
+                bot.reply_to(message, "⚠️ فعلاً سرویس هوش مصنوعی در دسترس نیست. لطفاً چند لحظه بعد دوباره تلاش کن.")
     except Exception as e:
         print(f"Message pipeline error: {e}")
-        bot.reply_to(message, "❌ خطایی در پردازش پیام رخ داد. لطفاً دوباره تلاش کن.")
+        if not state["timed_out"]:
+            bot.reply_to(message, "❌ خطایی در پردازش پیام رخ داد. لطفاً دوباره تلاش کن.")
+    finally:
+        cancel_processing_guard(timer)
+        try:
+            bot.delete_message(chat_id, status_msg.message_id)
+        except Exception:
+            pass
 
 @bot.message_handler(commands=["time", "date"])
 def handle_time_command(message):
