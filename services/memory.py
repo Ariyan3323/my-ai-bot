@@ -1,11 +1,14 @@
 # services/memory.py
 import json
 import os
+import threading
+import tempfile
 from datetime import datetime
 
 # Portable path: a json file next to the project root, works on any machine
 MEMORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "user_memory.json")
 MAX_MESSAGES = 10
+_MEMORY_LOCK = threading.RLock()
 
 def load_memory():
     """Loads user memory from the local JSON file."""
@@ -18,33 +21,40 @@ def load_memory():
         return {}
 
 def save_memory(memory):
-    """Saves user memory to the local JSON file."""
+    """Atomically saves user memory to avoid corruption from concurrent Telegram handlers."""
     try:
-        with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(memory, f, indent=4, ensure_ascii=False)
+        directory = os.path.dirname(MEMORY_FILE)
+        os.makedirs(directory, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix=".memory_", suffix=".json", dir=directory)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(memory, f, indent=4, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, MEMORY_FILE)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
     except Exception as e:
         print(f"Error saving memory: {e}")
 
 def add_to_memory(user_id, role, text):
-    """Adds a message to the user's conversation history."""
-    memory = load_memory()
-    user_id_str = str(user_id)
-    
-    if user_id_str not in memory:
-        memory[user_id_str] = {"history": [], "personality": "نامشخص"}
-        
-    # Add new message
-    new_entry = {
-        "role": role,
-        "text": text,
-        "timestamp": datetime.now().isoformat()
-    }
-    memory[user_id_str]["history"].append(new_entry)
-    
-    # Keep only the last MAX_MESSAGES
-    memory[user_id_str]["history"] = memory[user_id_str]["history"][-MAX_MESSAGES:]
-    
-    save_memory(memory)
+    """Adds a message to the user's conversation history safely."""
+    with _MEMORY_LOCK:
+        memory = load_memory()
+        user_id_str = str(user_id)
+
+        if user_id_str not in memory:
+            memory[user_id_str] = {"history": [], "personality": "نامشخص"}
+
+        new_entry = {
+            "role": role,
+            "text": text,
+            "timestamp": datetime.now().isoformat()
+        }
+        memory[user_id_str]["history"].append(new_entry)
+        memory[user_id_str]["history"] = memory[user_id_str]["history"][-MAX_MESSAGES:]
+        save_memory(memory)
 
 def get_history(user_id):
     """Retrieves the conversation history for a user."""
