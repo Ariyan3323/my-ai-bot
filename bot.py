@@ -1,5 +1,6 @@
 import os
 import json
+import ast
 import threading
 import tempfile
 import base64
@@ -865,6 +866,30 @@ def check_voice_intent(text: str) -> bool:
     return any(k in t for k in keywords)
 
 
+def basic_local_response(text):
+    """Fast offline answers for health checks and safe arithmetic when AI is unavailable."""
+    t = re.sub(r"\s+", " ", (text or "").strip().lower())
+
+    if "تست ارتباط" in t or "ارتباط" in t and "آماده" in t:
+        return "✅ آماده‌ام؛ ارتباط ربات برقرار است."
+    if "سلام" == t or t.startswith("سلام ") or t.startswith("سلام،") or t.startswith("سلام!"):
+        return "سلام 🌹 آماده‌ام، بگو چه کاری برات انجام بدم."
+
+    compact = re.sub(r"\s+", "", t)
+    if re.fullmatch(r"[0-9۰-۹]+(?:[+\-*/][0-9۰-۹]+)+", compact):
+        trans = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+        expr = compact.translate(trans)
+        try:
+            tree = ast.parse(expr, mode="eval")
+            allowed = (ast.Expression, ast.Constant, ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Div)
+            if all(isinstance(node, allowed) for node in ast.walk(tree)):
+                value = eval(compile(tree, "<math>", "eval"), {"__builtins__": {}}, {})
+                if isinstance(value, (int, float)) and abs(value) < 10**100:
+                    return str(value)
+        except Exception:
+            pass
+    return None
+
 def build_memory_report(user_id):
     """Return only memory actually stored for this Telegram user."""
     history = get_history(user_id)
@@ -1023,6 +1048,16 @@ def handle_all_messages(message):
 
     if is_memory_request(text):
         bot.reply_to(message, build_memory_report(message.from_user.id))
+        return
+
+    local_answer = basic_local_response(text)
+    if local_answer:
+        bot.reply_to(message, local_answer)
+        try:
+            add_to_memory(message.from_user.id, "user", text)
+            add_to_memory(message.from_user.id, "assistant", local_answer)
+        except Exception as memory_err:
+            print(f"Local response memory save skipped: {memory_err}")
         return
 
     img_prompt = check_image_intent(text)
